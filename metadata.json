@@ -1,0 +1,6 @@
+{
+  "name": "Dyastie Editor",
+  "description": "Professional multi-track non-linear video editor for gaming content creators with audio waveforms, sync assistant, and hardware-optimized rendering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
