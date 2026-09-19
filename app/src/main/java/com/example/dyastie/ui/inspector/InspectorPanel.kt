@@ -17,12 +17,16 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.dyastie.model.ClipTransition
 import com.example.dyastie.model.EffectType
+import com.example.dyastie.model.KeyframeProperty
+import com.example.dyastie.model.TransitionType
 import com.example.ui.theme.*
 import com.example.dyastie.viewmodel.DyastieViewModel
 
 enum class InspectorTab {
     TRANSFORM,
+    TRANSITIONS,
     AUDIO,
     COLOR,
     EFFECTS,
@@ -180,6 +184,170 @@ fun InspectorPanel(
                         modifier = Modifier.fillMaxWidth().height(32.dp)
                     ) {
                         Text("Reset Transform", fontSize = 11.sp, color = NleTextPrimary)
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text("KEYFRAME ANIMATION", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = NleAccentCyan)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Button(
+                            onClick = {
+                                viewModel.addKeyframe(selectedClip.id, KeyframeProperty.SCALE, tr.scaleX)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NleSurfaceVariant),
+                            modifier = Modifier.weight(1f).height(28.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("+ Scale KF", fontSize = 9.sp, color = NleTextPrimary)
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.addKeyframe(selectedClip.id, KeyframeProperty.POSITION_X, tr.posX)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NleSurfaceVariant),
+                            modifier = Modifier.weight(1f).height(28.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("+ PosX KF", fontSize = 9.sp, color = NleTextPrimary)
+                        }
+                        Button(
+                            onClick = {
+                                viewModel.addKeyframe(selectedClip.id, KeyframeProperty.OPACITY, tr.opacity)
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = NleSurfaceVariant),
+                            modifier = Modifier.weight(1f).height(28.dp),
+                            contentPadding = PaddingValues(0.dp)
+                        ) {
+                            Text("+ Alpha KF", fontSize = 9.sp, color = NleTextPrimary)
+                        }
+                    }
+
+                    if (selectedClip.keyframes.isNotEmpty()) {
+                        Text("Keyframes (${selectedClip.keyframes.size}):", fontSize = 10.sp, color = NleTextSecondary)
+                        selectedClip.keyframes.sortedBy { it.timeOffsetMs }.forEach { kf ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .background(NleSurfaceVariant, RoundedCornerShape(4.dp))
+                                    .padding(horizontal = 6.dp, vertical = 4.dp),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    "${kf.property.name} @ ${kf.timeOffsetMs}ms = ${String.format("%.2f", kf.value)}",
+                                    fontSize = 10.sp,
+                                    color = NleTextPrimary
+                                )
+                                IconButton(
+                                    onClick = { viewModel.removeKeyframe(selectedClip.id, kf.id) },
+                                    modifier = Modifier.size(20.dp)
+                                ) {
+                                    Icon(Icons.Default.Close, contentDescription = "Delete Keyframe", tint = NleErrorRed, modifier = Modifier.size(14.dp))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                InspectorTab.TRANSITIONS -> {
+                    Text("CLIP TRANSITIONS", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = NleAccentCyan)
+
+                    // Transition In
+                    Text("Transition In", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = NleTextPrimary)
+                    var selectedTypeIn by remember(selectedClip.transitionIn) {
+                        mutableStateOf(selectedClip.transitionIn?.type)
+                    }
+                    var durationInMs by remember(selectedClip.transitionIn) {
+                        mutableStateOf(selectedClip.transitionIn?.durationMs?.toFloat() ?: 500f)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf(null to "None", TransitionType.CROSSFADE to "Fade", TransitionType.WIPE_LEFT to "Wipe L", TransitionType.DIP_TO_BLACK to "Dip Black").forEach { (type, label) ->
+                            Button(
+                                onClick = {
+                                    selectedTypeIn = type
+                                    val newIn = type?.let { ClipTransition(it, durationInMs.toLong()) }
+                                    viewModel.updateClipTransitions(selectedClip.id, newIn, selectedClip.transitionOut)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (selectedTypeIn == type) NleAccentCyan else NleSurfaceVariant
+                                ),
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.weight(1f).height(28.dp)
+                            ) {
+                                Text(
+                                    text = label,
+                                    fontSize = 9.sp,
+                                    color = if (selectedTypeIn == type) Color.Black else NleTextPrimary
+                                )
+                            }
+                        }
+                    }
+                    if (selectedTypeIn != null) {
+                        Text("Duration In: ${durationInMs.toInt()}ms", fontSize = 10.sp, color = NleTextSecondary)
+                        Slider(
+                            value = durationInMs,
+                            onValueChange = { d ->
+                                durationInMs = d
+                                val newIn = selectedTypeIn?.let { ClipTransition(it, d.toLong()) }
+                                viewModel.updateClipTransitions(selectedClip.id, newIn, selectedClip.transitionOut)
+                            },
+                            valueRange = 100f..2000f
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Transition Out
+                    Text("Transition Out", fontSize = 11.sp, fontWeight = FontWeight.SemiBold, color = NleTextPrimary)
+                    var selectedTypeOut by remember(selectedClip.transitionOut) {
+                        mutableStateOf(selectedClip.transitionOut?.type)
+                    }
+                    var durationOutMs by remember(selectedClip.transitionOut) {
+                        mutableStateOf(selectedClip.transitionOut?.durationMs?.toFloat() ?: 500f)
+                    }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        listOf(null to "None", TransitionType.CROSSFADE to "Fade", TransitionType.WIPE_RIGHT to "Wipe R", TransitionType.DIP_TO_BLACK to "Dip Black").forEach { (type, label) ->
+                            Button(
+                                onClick = {
+                                    selectedTypeOut = type
+                                    val newOut = type?.let { ClipTransition(it, durationOutMs.toLong()) }
+                                    viewModel.updateClipTransitions(selectedClip.id, selectedClip.transitionIn, newOut)
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (selectedTypeOut == type) NleAccentCyan else NleSurfaceVariant
+                                ),
+                                contentPadding = PaddingValues(0.dp),
+                                modifier = Modifier.weight(1f).height(28.dp)
+                            ) {
+                                Text(
+                                    text = label,
+                                    fontSize = 9.sp,
+                                    color = if (selectedTypeOut == type) Color.Black else NleTextPrimary
+                                )
+                            }
+                        }
+                    }
+                    if (selectedTypeOut != null) {
+                        Text("Duration Out: ${durationOutMs.toInt()}ms", fontSize = 10.sp, color = NleTextSecondary)
+                        Slider(
+                            value = durationOutMs,
+                            onValueChange = { d ->
+                                durationOutMs = d
+                                val newOut = selectedTypeOut?.let { ClipTransition(it, d.toLong()) }
+                                viewModel.updateClipTransitions(selectedClip.id, selectedClip.transitionIn, newOut)
+                            },
+                            valueRange = 100f..2000f
+                        )
                     }
                 }
 

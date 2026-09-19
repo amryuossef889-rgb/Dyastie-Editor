@@ -1,5 +1,6 @@
 package com.example.dyastie.ui.bin
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -23,8 +24,8 @@ import androidx.compose.ui.unit.sp
 import com.example.dyastie.model.EffectType
 import com.example.dyastie.model.MediaItem
 import com.example.dyastie.model.MediaType
-import com.example.ui.theme.*
 import com.example.dyastie.viewmodel.DyastieViewModel
+import com.example.ui.theme.*
 
 enum class BinTab {
     MEDIA,
@@ -39,7 +40,9 @@ enum class BinTab {
 fun MediaBin(
     viewModel: DyastieViewModel,
     modifier: Modifier = Modifier,
-    onImportRequest: () -> Unit
+    onImportVisual: () -> Unit,
+    onImportAudio: () -> Unit,
+    onRelinkMedia: (MediaItem) -> Unit
 ) {
     var currentTab by remember { mutableStateOf(BinTab.MEDIA) }
     val project by viewModel.project.collectAsState()
@@ -90,7 +93,9 @@ fun MediaBin(
 
             if (currentTab == BinTab.MEDIA || currentTab == BinTab.AUDIO || currentTab == BinTab.IMAGES) {
                 Button(
-                    onClick = onImportRequest,
+                    onClick = {
+                        if (currentTab == BinTab.AUDIO) onImportAudio() else onImportVisual()
+                    },
                     colors = ButtonDefaults.buttonColors(containerColor = NleAccentCyan),
                     contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
                     shape = RoundedCornerShape(4.dp),
@@ -103,12 +108,17 @@ fun MediaBin(
                         modifier = Modifier.size(14.dp)
                     )
                     Spacer(modifier = Modifier.width(4.dp))
-                    Text("Import", fontSize = 11.sp, color = Color.Black, fontWeight = FontWeight.Bold)
+                    Text(
+                        text = if (currentTab == BinTab.AUDIO) "Import Audio" else "Import Media",
+                        fontSize = 11.sp,
+                        color = Color.Black,
+                        fontWeight = FontWeight.Bold
+                    )
                 }
             }
         }
 
-        Divider(color = NleBorder, thickness = 1.dp)
+        HorizontalDivider(color = NleBorder, thickness = 1.dp)
 
         // Content by Tab
         Box(modifier = Modifier.fillMaxSize().padding(6.dp)) {
@@ -137,7 +147,8 @@ fun MediaBin(
                             items(filtered) { mediaItem ->
                                 MediaBinCard(
                                     item = mediaItem,
-                                    onAddToTimeline = { viewModel.addMediaToTimeline(mediaItem) }
+                                    onAddToTimeline = { viewModel.addMediaToTimeline(mediaItem) },
+                                    onRelink = { onRelinkMedia(mediaItem) }
                                 )
                             }
                         }
@@ -145,7 +156,6 @@ fun MediaBin(
                 }
 
                 BinTab.TEXT -> {
-                    // Text Gaming Presets
                     val textPresets = listOf(
                         Triple("CLUTCH", "1v4 CLUTCH MOMENT!", 0xFFFFD700L),
                         Triple("LEVEL UP", "LEVEL UP +1000 XP!", 0xFF00FF88L),
@@ -205,7 +215,6 @@ fun MediaBin(
                 }
 
                 BinTab.EFFECTS -> {
-                    // Gaming Effects
                     LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         items(EffectType.values()) { effectType ->
                             Card(
@@ -284,12 +293,14 @@ fun MediaBin(
 @Composable
 fun MediaBinCard(
     item: MediaItem,
-    onAddToTimeline: () -> Unit
+    onAddToTimeline: () -> Unit,
+    onRelink: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(containerColor = NleSurfaceVariant),
-        shape = RoundedCornerShape(6.dp)
+        shape = RoundedCornerShape(6.dp),
+        border = if (item.isOffline) BorderStroke(1.dp, NleErrorRed) else null
     ) {
         Row(
             modifier = Modifier.padding(8.dp).fillMaxWidth(),
@@ -300,17 +311,22 @@ fun MediaBinCard(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(if (item.type == MediaType.VIDEO) NleVideoClip else NleAudioClip),
+                    .background(
+                        if (item.isOffline) NleErrorRed.copy(alpha = 0.3f)
+                        else if (item.type == MediaType.VIDEO) NleVideoClip else NleAudioClip
+                    ),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
-                    imageVector = when (item.type) {
-                        MediaType.VIDEO -> Icons.Default.Videocam
-                        MediaType.AUDIO -> Icons.Default.Audiotrack
-                        MediaType.IMAGE -> Icons.Default.Image
+                    imageVector = when {
+                        item.isOffline -> Icons.Default.BrokenImage
+                        item.type == MediaType.VIDEO -> Icons.Default.Videocam
+                        item.type == MediaType.AUDIO -> Icons.Default.Audiotrack
+                        item.type == MediaType.IMAGE -> Icons.Default.Image
+                        else -> Icons.Default.Videocam
                     },
                     contentDescription = null,
-                    tint = Color.White,
+                    tint = if (item.isOffline) NleErrorRed else Color.White,
                     modifier = Modifier.size(22.dp)
                 )
             }
@@ -322,25 +338,56 @@ fun MediaBinCard(
                     text = item.name,
                     fontSize = 11.sp,
                     fontWeight = FontWeight.Bold,
-                    color = NleTextPrimary,
+                    color = if (item.isOffline) NleErrorRed else NleTextPrimary,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
-                Text(
-                    text = "${item.durationMs / 1000}s • ${if (item.type == MediaType.VIDEO) "${item.width}x${item.height}" else "Audio 44.1k"}",
-                    fontSize = 10.sp,
-                    color = NleTextSecondary
-                )
+                if (item.isOffline) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.padding(top = 2.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .background(NleErrorRed, RoundedCornerShape(3.dp))
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                        ) {
+                            Text("OFFLINE", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                        }
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Relink",
+                            fontSize = 10.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NleAccentCyan,
+                            modifier = Modifier
+                                .clickable { onRelink() }
+                                .padding(2.dp)
+                                .testTag("relink_button_${item.id}")
+                        )
+                    }
+                } else {
+                    val info = when (item.type) {
+                        MediaType.VIDEO -> "${item.durationMs / 1000}s • ${item.width}x${item.height} • ${item.fps.toInt()}fps"
+                        MediaType.AUDIO -> "${item.durationMs / 1000}s • ${item.channelCount}ch • ${item.sampleRate}Hz"
+                        MediaType.IMAGE -> "Still Image • ${item.width}x${item.height}"
+                    }
+                    Text(
+                        text = info,
+                        fontSize = 10.sp,
+                        color = NleTextSecondary
+                    )
+                }
             }
 
             IconButton(
                 onClick = onAddToTimeline,
-                modifier = Modifier.size(30.dp)
+                modifier = Modifier.size(30.dp).testTag("add_to_timeline_${item.id}")
             ) {
                 Icon(
                     imageVector = Icons.Default.AddCircleOutline,
                     contentDescription = "Add to timeline",
-                    tint = NleAccentCyan,
+                    tint = if (item.isOffline) NleTextSecondary else NleAccentCyan,
                     modifier = Modifier.size(20.dp)
                 )
             }

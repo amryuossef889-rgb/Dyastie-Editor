@@ -216,10 +216,12 @@ fun TimelineComponent(
                             val clipWidth = max((clip.timelineDurationMs * pxPerMs).toInt(), 24).dp
                             val isSelected = selectedClipIds.contains(clip.id)
                             val waveform = if (!clip.isVideoTrack) viewModel.getWaveformForClip(clip) else null
+                            val isOffline = project.mediaItems.find { it.id == clip.mediaId }?.isOffline == true
 
                             ClipView(
                                 clip = clip,
                                 isSelected = isSelected,
+                                isOffline = isOffline,
                                 waveform = waveform,
                                 modifier = Modifier
                                     .offset(x = clipX, y = currentY.dp)
@@ -354,6 +356,7 @@ fun TrackHeaderItem(
 fun ClipView(
     clip: TimelineClip,
     isSelected: Boolean,
+    isOffline: Boolean = false,
     waveform: FloatArray?,
     modifier: Modifier = Modifier,
     onSelect: (Boolean) -> Unit,
@@ -371,10 +374,14 @@ fun ClipView(
     Box(
         modifier = modifier
             .clip(RoundedCornerShape(4.dp))
-            .background(clipColor)
+            .background(if (isOffline) NleErrorRed.copy(alpha = 0.35f) else clipColor)
             .border(
                 width = if (isSelected) 2.dp else 1.dp,
-                color = if (isSelected) NleAccentCyan else Color.Black.copy(alpha = 0.4f),
+                color = when {
+                    isSelected -> NleAccentCyan
+                    isOffline -> NleErrorRed
+                    else -> Color.Black.copy(alpha = 0.4f)
+                },
                 shape = RoundedCornerShape(4.dp)
             )
             .pointerInput(clip.id) {
@@ -419,6 +426,49 @@ fun ClipView(
             horizontalArrangement = Arrangement.SpaceBetween
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // Offline Badge
+                if (isOffline) {
+                    Box(
+                        modifier = Modifier
+                            .background(NleErrorRed, RoundedCornerShape(2.dp))
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
+                    ) {
+                        Text("OFFLINE", fontSize = 8.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                    Spacer(modifier = Modifier.width(3.dp))
+                }
+                // Transition In Badge
+                if (clip.transitionIn != null) {
+                    Box(
+                        modifier = Modifier
+                            .background(NleAccentCyan.copy(alpha = 0.3f), RoundedCornerShape(2.dp))
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = "▶${clip.transitionIn.type.name.take(4)}",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NleAccentCyan
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(3.dp))
+                }
+                // Keyframe Indicator Badge
+                if (clip.keyframes.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color.Magenta.copy(alpha = 0.3f), RoundedCornerShape(2.dp))
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = "◆${clip.keyframes.size}",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFFFF80DF)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(3.dp))
+                }
                 // Link Badge (Section 35: VISUAL LINK INDICATOR)
                 if (clip.linkedClipId != null) {
                     Icon(
@@ -449,11 +499,29 @@ fun ClipView(
                 )
             }
 
-            Text(
-                text = String.format("%.1fs", clip.timelineDurationMs / 1000f),
-                fontSize = 9.sp,
-                color = Color.White.copy(alpha = 0.8f)
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Transition Out Badge
+                if (clip.transitionOut != null) {
+                    Box(
+                        modifier = Modifier
+                            .background(NleAccentCyan.copy(alpha = 0.3f), RoundedCornerShape(2.dp))
+                            .padding(horizontal = 3.dp, vertical = 1.dp)
+                    ) {
+                        Text(
+                            text = "${clip.transitionOut.type.name.take(4)}◀",
+                            fontSize = 8.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NleAccentCyan
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(3.dp))
+                }
+                Text(
+                    text = String.format("%.1fs", clip.timelineDurationMs / 1000f),
+                    fontSize = 9.sp,
+                    color = Color.White.copy(alpha = 0.8f)
+                )
+            }
         }
 
         // Left Trim Handle (visible when selected)

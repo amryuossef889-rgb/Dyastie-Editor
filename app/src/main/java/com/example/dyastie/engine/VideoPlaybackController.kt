@@ -101,28 +101,26 @@ class VideoPlaybackController(
 
     fun renderCurrentTime(project: Project) {
         val currentTimeMs = _playheadPositionMs.value
-        // Find topmost active video track clip
-        val videoClips = project.clips.filter { clip ->
+        // Collect all active video clips across tracks, sorted ascending by trackId (V1, V2, V3, etc.)
+        val activeVideoClips = project.clips.filter { clip ->
             clip.isVideoTrack && clip.containsTime(currentTimeMs)
-        }.sortedByDescending { it.trackId } // V4 > V3 > V2 > V1
-
-        val activeClip = videoClips.firstOrNull { clip ->
+        }.filter { clip ->
             val track = project.tracks.find { it.id == clip.trackId }
             track?.isHidden != true && !clip.isLocked
-        }
+        }.sortedBy { it.trackId }
 
         coroutineScope.launch(Dispatchers.Default) {
-            val baseBitmap = if (activeClip != null) {
-                val mediaItem = project.mediaItems.find { it.id == activeClip.mediaId }
-                val sourceTimeMs = activeClip.mapTimelineToSourceTime(currentTimeMs)
-                getFrameAtTime(mediaItem, sourceTimeMs)
-            } else null
+            val clipsWithBitmaps = activeVideoClips.map { clip ->
+                val mediaItem = project.mediaItems.find { it.id == clip.mediaId }
+                val sourceTimeMs = clip.mapTimelineToSourceTime(currentTimeMs)
+                val bmp = getFrameAtTime(mediaItem, sourceTimeMs)
+                clip to bmp
+            }
 
-            val rendered = VideoRenderPipeline.renderFrame(
-                baseBitmap = baseBitmap,
+            val rendered = VideoRenderPipeline.renderCompositeFrame(
+                clipsWithBitmaps = clipsWithBitmaps,
                 outputWidth = project.width,
                 outputHeight = project.height,
-                clip = activeClip,
                 timelineTimeMs = currentTimeMs,
                 previewQualityScale = _previewQuality.value
             )
@@ -133,7 +131,7 @@ class VideoPlaybackController(
         }
     }
 
-    private fun getFrameAtTime(mediaItem: MediaItem?, sourceTimeMs: Long): Bitmap? {
+    internal fun getFrameAtTime(mediaItem: MediaItem?, sourceTimeMs: Long): Bitmap? {
         if (mediaItem == null) return null
 
         if (mediaItem.isSample || mediaItem.type == MediaType.IMAGE) {
@@ -206,7 +204,7 @@ class VideoPlaybackController(
         return bmp
     }
 
-    private fun generateSampleGamingFrame(mediaItem: MediaItem, sourceTimeMs: Long): Bitmap {
+    internal fun generateSampleGamingFrame(mediaItem: MediaItem, sourceTimeMs: Long): Bitmap {
         val w = 640
         val h = 360
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)

@@ -25,7 +25,9 @@ data class TimelineClip(
     val colorGrading: ColorGrading = ColorGrading(),
     val effects: List<VideoEffect> = emptyList(),
     val keyframes: List<ClipKeyframe> = emptyList(),
-    val textOverlay: TextOverlay? = null
+    val textOverlay: TextOverlay? = null,
+    val transitionIn: ClipTransition? = null,
+    val transitionOut: ClipTransition? = null
 ) {
     val timelineEndMs: Long get() = timelineStartMs + timelineDurationMs
 

@@ -3,6 +3,7 @@ package com.example.dyastie.engine
 import android.graphics.*
 import com.example.dyastie.model.*
 import kotlin.math.cos
+import kotlin.math.max
 import kotlin.math.sin
 
 object VideoRenderPipeline {
@@ -13,6 +14,17 @@ object VideoRenderPipeline {
         outputHeight: Int,
         clip: TimelineClip?,
         timelineTimeMs: Long,
+        previewQualityScale: Float = 1.0f
+    ): Bitmap {
+        val pairs = if (clip != null) listOf(clip to baseBitmap) else emptyList()
+        return renderCompositeFrame(pairs, outputWidth, outputHeight, timelineTimeMs, previewQualityScale)
+    }
+
+    fun renderCompositeFrame(
+        clipsWithBitmaps: List<Pair<TimelineClip, Bitmap?>>,
+        outputWidth: Int,
+        outputHeight: Int,
+        timelineTimeMs: Long,
         previewQualityScale: Float = 1.0f // 1.0 = Full, 0.5 = 1/2, 0.25 = 1/4
     ): Bitmap {
         val targetWidth = (outputWidth * previewQualityScale).toInt().coerceAtLeast(160)
@@ -22,16 +34,31 @@ object VideoRenderPipeline {
         val canvas = Canvas(output)
         canvas.drawColor(Color.BLACK)
 
-        if (clip == null || baseBitmap == null) {
-            // Draw pro NLE empty slate / timecode card
+        if (clipsWithBitmaps.isEmpty()) {
             drawPlaceholderGrid(canvas, targetWidth, targetHeight, timelineTimeMs)
             return output
         }
 
+        for ((clip, baseBitmap) in clipsWithBitmaps) {
+            renderClipLayer(canvas, targetWidth, targetHeight, clip, baseBitmap, timelineTimeMs)
+        }
+
+        return output
+    }
+
+    private fun renderClipLayer(
+        canvas: Canvas,
+        targetWidth: Int,
+        targetHeight: Int,
+        clip: TimelineClip,
+        baseBitmap: Bitmap?,
+        timelineTimeMs: Long
+    ) {
         val transform = clip.transform
         val colorGrading = clip.colorGrading
         val effects = clip.effects.filter { it.isEnabled }
         val localTimeMs = (timelineTimeMs - clip.timelineStartMs).coerceAtLeast(0L)
+        val remainingMs = (clip.timelineEndMs - timelineTimeMs).coerceAtLeast(0L)
 
         // 1. Interpolate Transform with Keyframes if present
         val animPosX = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.POSITION_X, localTimeMs, transform.posX)
@@ -41,8 +68,47 @@ object VideoRenderPipeline {
         val animRotation = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.ROTATION, localTimeMs, transform.rotationDeg)
         val animOpacity = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.OPACITY, localTimeMs, transform.opacity)
 
-        canvas.save()
+        // 2. Evaluate Transitions (In and Out)
+        var transitionAlphaMultiplier = 1.0f
+        var clipWipeLeft = 0f
+        var clipWipeRight = targetWidth.toFloat()
+        var dipBlackAlpha = 0
+        var dipWhiteAlpha = 0
 
+        clip.transitionIn?.let { ti ->
+            if (localTimeMs < ti.durationMs && ti.durationMs > 0L) {
+                val t = (localTimeMs.toFloat() / ti.durationMs).coerceIn(0f, 1f)
+                when (ti.type) {
+                    TransitionType.CROSSFADE -> transitionAlphaMultiplier *= t
+                    TransitionType.WIPE_LEFT -> clipWipeRight = targetWidth * t
+                    TransitionType.WIPE_RIGHT -> clipWipeLeft = targetWidth * (1f - t)
+                    TransitionType.DIP_TO_BLACK -> dipBlackAlpha = ((1f - t) * 255).toInt()
+                    TransitionType.DIP_TO_WHITE -> dipWhiteAlpha = ((1f - t) * 255).toInt()
+                }
+            }
+        }
+
+        clip.transitionOut?.let { to ->
+            if (remainingMs < to.durationMs && to.durationMs > 0L) {
+                val t = (remainingMs.toFloat() / to.durationMs).coerceIn(0f, 1f)
+                when (to.type) {
+                    TransitionType.CROSSFADE -> transitionAlphaMultiplier *= t
+                    TransitionType.WIPE_LEFT -> clipWipeRight = targetWidth * t
+                    TransitionType.WIPE_RIGHT -> clipWipeLeft = targetWidth * (1f - t)
+                    TransitionType.DIP_TO_BLACK -> dipBlackAlpha = max(dipBlackAlpha, ((1f - t) * 255).toInt())
+                    TransitionType.DIP_TO_WHITE -> dipWhiteAlpha = max(dipWhiteAlpha, ((1f - t) * 255).toInt())
+                }
+            }
+        }
+
+        val hasWipe = (clipWipeLeft > 0f || clipWipeRight < targetWidth.toFloat())
+
+        canvas.save()
+        if (hasWipe) {
+            canvas.clipRect(clipWipeLeft, 0f, clipWipeRight, targetHeight.toFloat())
+        }
+
+        // 3. Evaluate Gaming Effects
         val centerX = targetWidth / 2f + animPosX * (targetWidth / 1920f)
         val centerY = targetHeight / 2f + animPosY * (targetHeight / 1080f)
 
@@ -52,7 +118,6 @@ object VideoRenderPipeline {
         var shakeOffsetX = 0f
         var shakeOffsetY = 0f
 
-        // 2. Evaluate Gaming Effects
         for (effect in effects) {
             when (effect.type) {
                 EffectType.ZOOM -> {
@@ -88,53 +153,57 @@ object VideoRenderPipeline {
             }
         }
 
-        canvas.translate(centerX + shakeOffsetX, centerY + shakeOffsetY)
-        canvas.rotate(totalRotation)
-        canvas.scale(totalScaleX, totalScaleY)
+        if (baseBitmap != null) {
+            canvas.save()
+            canvas.translate(centerX + shakeOffsetX, centerY + shakeOffsetY)
+            canvas.rotate(totalRotation)
+            canvas.scale(totalScaleX, totalScaleY)
 
-        // 3. Color Grading & Opacity
-        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
-        paint.alpha = (transform.opacity.coerceIn(0f, 1f) * 255).toInt()
+            // 4. Color Grading & Opacity
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+            val effectiveAlpha = (animOpacity * transitionAlphaMultiplier).coerceIn(0f, 1f)
+            paint.alpha = (effectiveAlpha * 255).toInt()
 
-        val cm = ColorMatrix()
-        // Saturation
-        cm.setSaturation(colorGrading.saturation.coerceIn(0f, 2f))
+            val cm = ColorMatrix()
+            // Saturation
+            cm.setSaturation(colorGrading.saturation.coerceIn(0f, 2f))
 
-        // Contrast & Brightness
-        val contrast = colorGrading.contrast.coerceIn(0f, 2f)
-        val brightnessShift = colorGrading.brightness * 255f
-        val scaleMatrix = ColorMatrix(floatArrayOf(
-            contrast, 0f, 0f, 0f, brightnessShift,
-            0f, contrast, 0f, 0f, brightnessShift,
-            0f, 0f, contrast, 0f, brightnessShift,
-            0f, 0f, 0f, 1f, 0f
-        ))
-        cm.postConcat(scaleMatrix)
-
-        // Temperature (Cool vs Warm)
-        if (colorGrading.temperature != 0f) {
-            val temp = colorGrading.temperature
-            val tempMatrix = ColorMatrix(floatArrayOf(
-                1f + temp * 0.2f, 0f, 0f, 0f, 0f,
-                0f, 1f, 0f, 0f, 0f,
-                0f, 0f, 1f - temp * 0.2f, 0f, 0f,
+            // Contrast & Brightness
+            val contrast = colorGrading.contrast.coerceIn(0f, 2f)
+            val brightnessShift = colorGrading.brightness * 255f
+            val scaleMatrix = ColorMatrix(floatArrayOf(
+                contrast, 0f, 0f, 0f, brightnessShift,
+                0f, contrast, 0f, 0f, brightnessShift,
+                0f, 0f, contrast, 0f, brightnessShift,
                 0f, 0f, 0f, 1f, 0f
             ))
-            cm.postConcat(tempMatrix)
+            cm.postConcat(scaleMatrix)
+
+            // Temperature (Cool vs Warm)
+            if (colorGrading.temperature != 0f) {
+                val temp = colorGrading.temperature
+                val tempMatrix = ColorMatrix(floatArrayOf(
+                    1f + temp * 0.2f, 0f, 0f, 0f, 0f,
+                    0f, 1f, 0f, 0f, 0f,
+                    0f, 0f, 1f - temp * 0.2f, 0f, 0f,
+                    0f, 0f, 0f, 1f, 0f
+                ))
+                cm.postConcat(tempMatrix)
+            }
+
+            paint.colorFilter = ColorMatrixColorFilter(cm)
+
+            // Draw video bitmap centered
+            val srcRect = Rect(0, 0, baseBitmap.width, baseBitmap.height)
+            val halfW = targetWidth / 2f
+            val halfH = targetHeight / 2f
+            val dstRect = RectF(-halfW, -halfH, halfW, halfH)
+            canvas.drawBitmap(baseBitmap, srcRect, dstRect, paint)
+
+            canvas.restore()
         }
 
-        paint.colorFilter = ColorMatrixColorFilter(cm)
-
-        // Draw video bitmap centered
-        val srcRect = Rect(0, 0, baseBitmap.width, baseBitmap.height)
-        val halfW = targetWidth / 2f
-        val halfH = targetHeight / 2f
-        val dstRect = RectF(-halfW, -halfH, halfW, halfH)
-        canvas.drawBitmap(baseBitmap, srcRect, dstRect, paint)
-
-        canvas.restore()
-
-        // 4. Overlays & Post-Process Effects (Flash, Vignette, Glitch Scanlines)
+        // 5. Overlays & Post-Process Effects (Flash, Vignette, Glitch Scanlines)
         for (effect in effects) {
             when (effect.type) {
                 EffectType.FLASH -> {
@@ -172,7 +241,6 @@ object VideoRenderPipeline {
                     }
                 }
                 EffectType.RGB_SPLIT -> {
-                    // Fast RGB fringe
                     val splitPaint = Paint().apply {
                         color = Color.argb((40 * effect.intensity).toInt(), 255, 0, 80)
                         xfermode = PorterDuffXfermode(PorterDuff.Mode.SCREEN)
@@ -183,12 +251,28 @@ object VideoRenderPipeline {
             }
         }
 
-        // 5. Draw Text Overlay if present
+        // 6. Draw Transition Dips (Dip to Black / Dip to White)
+        if (dipBlackAlpha > 0) {
+            val dipBlackPaint = Paint().apply {
+                color = Color.BLACK
+                alpha = dipBlackAlpha.coerceIn(0, 255)
+            }
+            canvas.drawRect(0f, 0f, targetWidth.toFloat(), targetHeight.toFloat(), dipBlackPaint)
+        }
+        if (dipWhiteAlpha > 0) {
+            val dipWhitePaint = Paint().apply {
+                color = Color.WHITE
+                alpha = dipWhiteAlpha.coerceIn(0, 255)
+            }
+            canvas.drawRect(0f, 0f, targetWidth.toFloat(), targetHeight.toFloat(), dipWhitePaint)
+        }
+
+        // 7. Draw Text Overlay if present
         clip.textOverlay?.let { textOverlay ->
             drawTextOverlay(canvas, targetWidth, targetHeight, textOverlay)
         }
 
-        return output
+        canvas.restore() // Restore wipe clip
     }
 
     private fun drawTextOverlay(

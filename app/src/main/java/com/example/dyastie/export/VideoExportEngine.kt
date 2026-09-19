@@ -1,11 +1,14 @@
 package com.example.dyastie.export
 
 import android.content.Context
+import android.graphics.*
 import android.media.*
 import android.os.Build
 import android.os.Environment
 import android.util.Log
 import com.example.dyastie.engine.VideoRenderPipeline
+import com.example.dyastie.model.MediaType
+import com.example.dyastie.model.MediaItem
 import com.example.dyastie.model.Project
 import com.example.dyastie.model.TimelineClip
 import kotlinx.coroutines.Dispatchers
@@ -62,6 +65,7 @@ object VideoExportEngine {
         var audioEncoder: MediaCodec? = null
         var muxer: MediaMuxer? = null
         var inputSurface: android.view.Surface? = null
+        val retrievers = mutableMapOf<String, MediaMetadataRetriever>()
 
         val totalDurationMs = project.durationMs.coerceAtLeast(1000L)
         val totalFrames = ((totalDurationMs / 1000f) * config.fps).toInt().coerceAtLeast(30)
@@ -108,6 +112,19 @@ object VideoExportEngine {
             var currentAudioSample = 0
             var audioPresentationTimeUs = 0L
 
+            retrievers.clear()
+            for (media in project.mediaItems) {
+                if (!media.isSample && media.type != MediaType.IMAGE && media.hasVideo) {
+                    try {
+                        val r = MediaMetadataRetriever()
+                        r.setDataSource(context, media.uri)
+                        retrievers[media.id] = r
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed creating retriever for ${media.name}", e)
+                    }
+                }
+            }
+
             for (frameIndex in 0 until totalFrames) {
                 if (isCancelled) {
                     onProgress(0f, "Export cancelled by user")
@@ -120,17 +137,32 @@ object VideoExportEngine {
                 val mbEstimate = String.format("%.1f MB", (frameIndex * config.videoBitrate / (8f * config.fps * 1024 * 1024)))
                 onProgress(progress, "Rendering frame $frameIndex of $totalFrames ($mbEstimate)")
 
-                // Active top-most video clip
-                val activeClip = project.clips.filter {
+                // Active video clips across all tracks, sorted from bottom (V1) to top (V2, V3, etc.)
+                val activeVideoClips = project.clips.filter {
                     it.isVideoTrack && it.containsTime(timeMs)
-                }.sortedByDescending { it.trackId }.firstOrNull()
+                }.filter { clip ->
+                    val track = project.tracks.find { it.id == clip.trackId }
+                    track?.isHidden != true && !clip.isLocked
+                }.sortedBy { it.trackId }
 
-                // Render video frame
-                val renderedBmp = VideoRenderPipeline.renderFrame(
-                    baseBitmap = null,
+                val clipsWithBitmaps = activeVideoClips.map { clip ->
+                    val mediaItem = project.mediaItems.find { it.id == clip.mediaId }
+                    val sourceTimeMs = clip.mapTimelineToSourceTime(timeMs)
+                    val bmp = if (mediaItem == null) {
+                        null
+                    } else if (mediaItem.isSample || mediaItem.type == MediaType.IMAGE) {
+                        generateSampleGamingFrameForExport(mediaItem, sourceTimeMs, config.width, config.height)
+                    } else {
+                        retrievers[mediaItem.id]?.getFrameAtTime(sourceTimeMs * 1000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    }
+                    clip to bmp
+                }
+
+                // Render composite video frame
+                val renderedBmp = VideoRenderPipeline.renderCompositeFrame(
+                    clipsWithBitmaps = clipsWithBitmaps,
                     outputWidth = config.width,
                     outputHeight = config.height,
-                    clip = activeClip,
                     timelineTimeMs = timeMs,
                     previewQualityScale = 1.0f
                 )
@@ -144,6 +176,13 @@ object VideoExportEngine {
                 canvas.drawBitmap(renderedBmp, 0f, 0f, null)
                 inputSurface.unlockCanvasAndPost(canvas)
                 renderedBmp.recycle()
+
+                // Recycle generated sample bitmaps
+                for ((_, bmp) in clipsWithBitmaps) {
+                    if (bmp != null && !bmp.isRecycled && bmp != renderedBmp) {
+                        bmp.recycle()
+                    }
+                }
 
                 // Feed audio samples corresponding to this frame duration
                 if (hasAudio && audioEncoder != null && currentAudioSample < totalAudioSamples) {
@@ -256,6 +295,10 @@ object VideoExportEngine {
                     try { muxer.stop() } catch (e: Exception) {}
                     muxer.release()
                 }
+                for (r in retrievers.values) {
+                    try { r.release() } catch (e: Exception) {}
+                }
+                retrievers.clear()
             } catch (e: Exception) {
                 Log.w(TAG, "Error cleaning up export resources", e)
             }
@@ -352,5 +395,64 @@ object VideoExportEngine {
         }
 
         return byteBuffer.array()
+    }
+
+    private fun generateSampleGamingFrameForExport(
+        mediaItem: MediaItem,
+        sourceTimeMs: Long,
+        width: Int,
+        height: Int
+    ): Bitmap {
+        val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+
+        // Draw synthetic gaming background
+        val bgPaint = Paint().apply {
+            color = when {
+                mediaItem.name.contains("Apex", ignoreCase = true) -> Color.rgb(20, 24, 40)
+                mediaItem.name.contains("Valorant", ignoreCase = true) -> Color.rgb(35, 18, 28)
+                mediaItem.name.contains("Facecam", ignoreCase = true) || mediaItem.name.contains("Webcam", ignoreCase = true) -> Color.rgb(25, 25, 35)
+                else -> Color.rgb(18, 22, 30)
+            }
+        }
+        canvas.drawRect(0f, 0f, width.toFloat(), height.toFloat(), bgPaint)
+
+        // Animated neon grid lines
+        val gridPaint = Paint().apply {
+            color = Color.argb(45, 0, 220, 255)
+            strokeWidth = 2f
+        }
+        val gridOffset = ((sourceTimeMs / 15) % 80).toFloat()
+        var gx = gridOffset
+        while (gx < width) {
+            canvas.drawLine(gx, 0f, gx, height.toFloat(), gridPaint)
+            gx += 80f
+        }
+        var gy = gridOffset
+        while (gy < height) {
+            canvas.drawLine(0f, gy, width.toFloat(), gy, gridPaint)
+            gy += 80f
+        }
+
+        // Center card with media item name and timestamp
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = (height * 0.045f).coerceAtLeast(24f)
+            typeface = Typeface.DEFAULT_BOLD
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(mediaItem.name, width / 2f, height / 2f - 20f, textPaint)
+
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(180, 0, 230, 255)
+            textSize = (height * 0.028f).coerceAtLeast(18f)
+            typeface = Typeface.MONOSPACE
+            textAlign = Paint.Align.CENTER
+        }
+        val sec = sourceTimeMs / 1000
+        val ms = (sourceTimeMs % 1000) / 10
+        canvas.drawText(String.format("SRC TC %02d:%02d:%02d", sec / 60, sec % 60, ms), width / 2f, height / 2f + 30f, subPaint)
+
+        return bmp
     }
 }

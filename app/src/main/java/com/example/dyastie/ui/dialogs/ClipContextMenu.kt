@@ -1,6 +1,7 @@
 package com.example.dyastie.ui.dialogs
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -13,12 +14,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.Popup
 import com.example.dyastie.model.TimelineClip
-import com.example.ui.theme.*
 import com.example.dyastie.viewmodel.DyastieViewModel
+import com.example.ui.theme.*
 
 @Composable
 fun ClipContextMenu(
@@ -27,23 +29,21 @@ fun ClipContextMenu(
     viewModel: DyastieViewModel,
     onDismiss: () -> Unit
 ) {
-    Dialog(onDismissRequest = onDismiss) {
-        Surface(
-            shape = RoundedCornerShape(8.dp),
-            color = NleSurface,
-            border = androidx.compose.foundation.BorderStroke(1.dp, NleBorder),
-            modifier = Modifier.width(260.dp).padding(8.dp)
-        ) {
-            Column(modifier = Modifier.padding(vertical = 6.dp)) {
-                Text(
-                    text = clip.name,
-                    fontSize = 11.sp,
-                    color = NleAccentCyan,
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-                    maxLines = 1
-                )
-                Divider(color = NleBorder, thickness = 1.dp)
+    val mediaItem = viewModel.project.value.mediaItems.find { it.id == clip.mediaId }
 
+    Popup(
+        onDismissRequest = onDismiss,
+        alignment = Alignment.TopStart
+    ) {
+        Card(
+            modifier = Modifier
+                .offset(x = (screenPosition.x / 2.5f).dp, y = (screenPosition.y / 2.5f).dp)
+                .width(220.dp)
+                .border(1.dp, NleBorder, RoundedCornerShape(6.dp)),
+            colors = CardDefaults.cardColors(containerColor = NleSurfaceVariant),
+            shape = RoundedCornerShape(6.dp)
+        ) {
+            Column(modifier = Modifier.padding(4.dp)) {
                 ContextMenuItem(Icons.Default.ContentCut, "Cut", "Ctrl+X") {
                     viewModel.cutSelected()
                     onDismiss()
@@ -65,7 +65,7 @@ fun ClipContextMenu(
                     onDismiss()
                 }
 
-                Divider(color = NleBorder, thickness = 1.dp)
+                HorizontalDivider(color = NleBorder, thickness = 1.dp)
 
                 if (clip.linkedClipId != null) {
                     ContextMenuItem(Icons.Default.LinkOff, "Unlink Video / Audio", "Ctrl+L") {
@@ -97,6 +97,14 @@ fun ClipContextMenu(
                         onDismiss()
                     }
                 }
+
+                if (mediaItem != null && (mediaItem.isOffline || !mediaItem.isSample)) {
+                    HorizontalDivider(color = NleBorder, thickness = 1.dp)
+                    ContextMenuItem(Icons.Default.BrokenImage, "Relink Media File", "") {
+                        viewModel.requestRelink(mediaItem)
+                        onDismiss()
+                    }
+                }
             }
         }
     }
@@ -113,22 +121,17 @@ private fun ContextMenuItem(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.SpaceBetween
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = NleTextPrimary,
-                modifier = Modifier.size(16.dp)
-            )
+            Icon(imageVector = icon, contentDescription = null, tint = NleTextSecondary, modifier = Modifier.size(14.dp))
             Spacer(modifier = Modifier.width(8.dp))
-            Text(text = label, fontSize = 12.sp, color = NleTextPrimary)
+            Text(text = label, fontSize = 11.sp, color = NleTextPrimary)
         }
         if (shortcut.isNotEmpty()) {
-            Text(text = shortcut, fontSize = 10.sp, color = NleTextSecondary)
+            Text(text = shortcut, fontSize = 9.sp, color = NleTextSecondary)
         }
     }
 }

@@ -4,17 +4,14 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.lifecycle.ViewModelProvider
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import androidx.lifecycle.ViewModelProvider
 import com.example.dyastie.ui.DyastieEditorScreen
-import com.example.ui.theme.NleBackground
 import com.example.dyastie.viewmodel.DyastieViewModel
-import com.example.ui.theme.MyApplicationTheme
+import com.example.ui.theme.DyastieTheme
+import com.example.ui.theme.NleBackground
 
 class MainActivity : ComponentActivity() {
     private val viewModel: DyastieViewModel by lazy {
@@ -25,7 +22,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setContent {
-            MyApplicationTheme(darkTheme = true) {
+            DyastieTheme(darkTheme = true) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = NleBackground
@@ -41,15 +38,4 @@ class MainActivity : ComponentActivity() {
         viewModel.saveStateOnAppPause()
         viewModel.playback.pause(viewModel.project.value)
     }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(text = "Hello $name!", modifier = modifier)
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    MyApplicationTheme { Greeting("Android") }
 }

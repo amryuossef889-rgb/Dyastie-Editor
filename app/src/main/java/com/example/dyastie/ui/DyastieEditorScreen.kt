@@ -2,6 +2,7 @@ package com.example.dyastie.ui
 
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.focusable
@@ -15,11 +16,13 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.dyastie.model.MediaType
 import com.example.dyastie.model.TimelineClip
 import com.example.dyastie.ui.bin.MediaBin
 import com.example.dyastie.ui.dialogs.AudioSyncDialog
 import com.example.dyastie.ui.dialogs.ClipContextMenu
 import com.example.dyastie.ui.dialogs.ExportDialog
+import com.example.dyastie.ui.dialogs.RelinkMediaDialog
 import com.example.dyastie.ui.inspector.InspectorPanel
 import com.example.dyastie.ui.preview.PreviewMonitor
 import com.example.ui.theme.NleBackground
@@ -37,15 +40,40 @@ fun DyastieEditorScreen(
     val project by viewModel.project.collectAsState()
     val audioSyncResult by viewModel.audioSyncResult.collectAsState()
     val exportStatus by viewModel.exportStatus.collectAsState()
+    val mediaToRelink by viewModel.mediaToRelink.collectAsState()
 
     var showExportDialog by remember { mutableStateOf(false) }
     var contextMenuClip by remember { mutableStateOf<Pair<TimelineClip, Offset>?>(null) }
 
-    // Media Picker Launcher for Video/Audio/Images
-    val mediaPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+    // Visual Media Picker (Zero-permission Android Photo Picker for Videos & Images)
+    val visualPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            viewModel.importMultipleMedia(uris, context)
+        }
+    }
+
+    // Audio Document Picker (OpenMultipleDocuments for Audio)
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris: List<Uri> ->
+        if (uris.isNotEmpty()) {
+            viewModel.importMultipleMedia(uris, context)
+        }
+    }
+
+    // Relink Media Launchers
+    val relinkVisualPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
-        uri?.let { viewModel.importMedia(it, context) }
+        uri?.let { viewModel.relinkMedia(it, context) }
+    }
+
+    val relinkDocumentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        uri?.let { viewModel.relinkMedia(it, context) }
     }
 
     // Physical USB Keyboard Shortcuts focus handler
@@ -79,29 +107,42 @@ fun DyastieEditorScreen(
                             viewModel.splitAtPlayhead()
                             true
                         }
-                        Key.V -> {
-                            viewModel.setTool(EditTool.SELECT)
+                        Key.Delete, Key.Backspace -> {
+                            if (event.isShiftPressed) {
+                                viewModel.rippleDeleteSelectedClips()
+                            } else {
+                                viewModel.deleteSelectedClips()
+                            }
                             true
                         }
                         Key.B -> {
                             viewModel.setTool(EditTool.BLADE)
                             true
                         }
-                        Key.Delete, Key.Backspace -> {
-                            viewModel.deleteSelectedClips()
+                        Key.V -> {
+                            viewModel.setTool(EditTool.SELECT)
+                            true
+                        }
+                        Key.T -> {
+                            viewModel.setTool(EditTool.TRIM)
+                            true
+                        }
+                        Key.R -> {
+                            viewModel.setTool(EditTool.RIPPLE)
+                            true
+                        }
+                        Key.H -> {
+                            viewModel.setTool(EditTool.HAND)
                             true
                         }
                         Key.Z -> {
                             if (event.isCtrlPressed) {
-                                viewModel.undo()
+                                if (event.isShiftPressed) viewModel.redo() else viewModel.undo()
                                 true
-                            } else false
-                        }
-                        Key.Y -> {
-                            if (event.isCtrlPressed) {
-                                viewModel.redo()
+                            } else {
+                                viewModel.setTool(EditTool.ZOOM)
                                 true
-                            } else false
+                            }
                         }
                         Key.C -> {
                             if (event.isCtrlPressed) {
@@ -115,7 +156,19 @@ fun DyastieEditorScreen(
                                 true
                             } else false
                         }
-                        Key.V -> {
+                        Key.L -> {
+                            if (event.isCtrlPressed) {
+                                viewModel.toggleLinkSelected()
+                                true
+                            } else false
+                        }
+                        Key.G -> {
+                            if (event.isCtrlPressed) {
+                                if (event.isShiftPressed) viewModel.ungroupSelectedClips() else viewModel.groupSelectedClips()
+                                true
+                            } else false
+                        }
+                        Key.P -> {
                             if (event.isCtrlPressed) {
                                 viewModel.pasteAtPlayhead()
                                 true
@@ -145,7 +198,17 @@ fun DyastieEditorScreen(
                     modifier = Modifier
                         .width(260.dp)
                         .fillMaxHeight(),
-                    onImportRequest = { mediaPickerLauncher.launch("*/*") }
+                    onImportVisual = {
+                        visualPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    },
+                    onImportAudio = {
+                        audioPickerLauncher.launch(arrayOf("audio/*"))
+                    },
+                    onRelinkMedia = { item ->
+                        viewModel.requestRelink(item)
+                    }
                 )
 
                 // Middle: Preview Monitor
@@ -195,6 +258,22 @@ fun DyastieEditorScreen(
                     showExportDialog = false
                     viewModel.dismissExport()
                 }
+            )
+        }
+
+        mediaToRelink?.let { relinkTarget ->
+            RelinkMediaDialog(
+                mediaItem = relinkTarget,
+                onBrowseFile = {
+                    if (relinkTarget.type == MediaType.AUDIO) {
+                        relinkDocumentPickerLauncher.launch(arrayOf("audio/*"))
+                    } else {
+                        relinkVisualPickerLauncher.launch(
+                            PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo)
+                        )
+                    }
+                },
+                onDismiss = { viewModel.dismissRelink() }
             )
         }
 

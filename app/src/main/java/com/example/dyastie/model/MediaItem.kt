@@ -23,7 +23,8 @@ data class MediaItem(
     val channelCount: Int = 2,
     val proxyUriString: String? = null,
     val waveformPeaks: FloatArray? = null,
-    val isSample: Boolean = false
+    val isSample: Boolean = false,
+    val isOffline: Boolean = false
 ) {
     val uri: Uri get() = Uri.parse(uriString)
 
@@ -51,6 +52,7 @@ data class MediaItem(
             if (!waveformPeaks.contentEquals(other.waveformPeaks)) return false
         } else if (other.waveformPeaks != null) return false
         if (isSample != other.isSample) return false
+        if (isOffline != other.isOffline) return false
 
         return true
     }
@@ -71,6 +73,7 @@ data class MediaItem(
         result = 31 * result + (proxyUriString?.hashCode() ?: 0)
         result = 31 * result + (waveformPeaks?.contentHashCode() ?: 0)
         result = 31 * result + isSample.hashCode()
+        result = 31 * result + isOffline.hashCode()
         return result
     }
 }

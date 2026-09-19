@@ -15,10 +15,12 @@ import com.example.dyastie.audio.WaveformExtractor
 import com.example.dyastie.engine.VideoPlaybackController
 import com.example.dyastie.export.ExportConfig
 import com.example.dyastie.export.VideoExportEngine
+import com.example.dyastie.media.MediaImportManager
 import com.example.dyastie.model.*
 import com.example.dyastie.project.ProjectRepository
 import com.example.dyastie.project.UndoRedoManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -91,23 +93,52 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
     private val _statusMessage = MutableStateFlow("Ready")
     val statusMessage: StateFlow<String> = _statusMessage.asStateFlow()
 
+    private val _mediaToRelink = MutableStateFlow<MediaItem?>(null)
+    val mediaToRelink: StateFlow<MediaItem?> = _mediaToRelink.asStateFlow()
+
     private val waveformCache = mutableMapOf<String, FloatArray>()
+    private var autosaveJob: Job? = null
 
     init {
         loadInitialProject()
         startAutosaveLoop()
     }
 
+    fun triggerAutosave() {
+        autosaveJob?.cancel()
+        autosaveJob = viewModelScope.launch(Dispatchers.IO) {
+            delay(150L)
+            repo.saveProject(_project.value, isAutosave = true)
+        }
+    }
+
     private fun loadInitialProject() {
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val saved = repo.loadLatestProject()
             if (saved != null && (saved.clips.isNotEmpty() || saved.mediaItems.isNotEmpty())) {
-                _project.value = saved
+                val checkedMedia = saved.mediaItems.map { item ->
+                    if (item.isSample) {
+                        item.copy(isOffline = false)
+                    } else {
+                        val accessible = MediaImportManager.isUriAccessible(getApplication(), item.uri)
+                        item.copy(isOffline = !accessible)
+                    }
+                }
+                val offlineCount = checkedMedia.count { it.isOffline }
+                withContext(Dispatchers.Main) {
+                    _project.value = saved.copy(mediaItems = checkedMedia)
+                    if (offlineCount > 0) {
+                        _statusMessage.value = "Warning: $offlineCount media file(s) offline. Tap Relink to restore."
+                    }
+                }
             } else {
-                // Populate sample gaming setup for immediate interactive editing
-                createSampleGamingProject()
+                withContext(Dispatchers.Main) {
+                    createSampleGamingProject()
+                }
             }
-            playback.renderCurrentTime(_project.value)
+            withContext(Dispatchers.Main) {
+                playback.renderCurrentTime(_project.value)
+            }
         }
     }
 
@@ -261,6 +292,7 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
 
     private fun saveCurrentState() {
         undoRedo.pushState(_project.value)
+        triggerAutosave()
     }
 
     // Tools & Selection
@@ -285,16 +317,17 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectClip(clipId: String, isMultiSelect: Boolean = false) {
         val current = _selectedClipIds.value.toMutableSet()
+        val clip = _project.value.clips.find { it.id == clipId }
+        val idsToToggle = mutableSetOf(clipId)
+        if (clip?.linkedClipId != null && clip.groupId != null) {
+            idsToToggle.add(clip.linkedClipId)
+        }
+
         if (isMultiSelect) {
-            if (current.contains(clipId)) current.remove(clipId) else current.add(clipId)
+            if (current.contains(clipId)) current.removeAll(idsToToggle) else current.addAll(idsToToggle)
         } else {
             current.clear()
-            current.add(clipId)
-            // If linked, also highlight its counterpart visually!
-            val clip = _project.value.clips.find { it.id == clipId }
-            clip?.linkedClipId?.let { linkedId ->
-                current.add(linkedId)
-            }
+            current.addAll(idsToToggle)
         }
         _selectedClipIds.value = current
     }
@@ -307,48 +340,86 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         _selectedClipIds.value = _project.value.clips.map { it.id }.toSet()
     }
 
-    // Media Import
-    fun importMedia(uri: Uri, context: Context) {
+    // Relink Media Handling
+    fun requestRelink(mediaItem: MediaItem) {
+        _mediaToRelink.value = mediaItem
+    }
+
+    fun dismissRelink() {
+        _mediaToRelink.value = null
+    }
+
+    fun relinkMedia(newUri: Uri, context: Context) {
+        val target = _mediaToRelink.value ?: return
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                val retriever = MediaMetadataRetriever()
-                retriever.setDataSource(context, uri)
-
-                val hasVideo = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_VIDEO) != null
-                val hasAudio = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_HAS_AUDIO) != null
-                val durationStr = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)
-                val durationMs = durationStr?.toLongOrNull() ?: 10_000L
-                val width = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH)?.toIntOrNull() ?: 1920
-                val height = retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT)?.toIntOrNull() ?: 1080
-                retriever.release()
-
-                val fileName = uri.lastPathSegment ?: "Imported_Media_${System.currentTimeMillis()}"
-                val type = if (hasVideo) MediaType.VIDEO else if (hasAudio) MediaType.AUDIO else MediaType.IMAGE
-
-                val mediaItem = MediaItem(
-                    id = "media_${UUID.randomUUID().toString().take(8)}",
-                    uriString = uri.toString(),
-                    name = fileName,
-                    type = type,
-                    durationMs = durationMs,
-                    width = width,
-                    height = height,
-                    hasAudio = hasAudio,
-                    hasVideo = hasVideo
-                )
+                val result = MediaImportManager.importMedia(context, newUri)
+                val newItem = result.mediaItem.copy(id = target.id, isOffline = false)
 
                 withContext(Dispatchers.Main) {
                     saveCurrentState()
-                    val updatedMedia = _project.value.mediaItems + mediaItem
-                    _project.value = _project.value.copy(mediaItems = updatedMedia)
-                    _statusMessage.value = "Imported $fileName"
-                    // Add directly to timeline at playhead if user imports
-                    addMediaToTimeline(mediaItem)
+                    val updatedMedia = _project.value.mediaItems.map {
+                        if (it.id == target.id) newItem else it
+                    }
+                    val updatedClips = _project.value.clips.map { c ->
+                        if (c.mediaId == target.id) {
+                            c.copy(
+                                name = if (c.isVideoTrack) "${newItem.name} [V]" else "${newItem.name} [A]"
+                            )
+                        } else c
+                    }
+                    _project.value = _project.value.copy(mediaItems = updatedMedia, clips = updatedClips)
+                    _mediaToRelink.value = null
+                    _statusMessage.value = "Successfully relinked ${newItem.name}"
+                    triggerAutosave()
+                    playback.renderCurrentTime(_project.value)
                 }
             } catch (e: Exception) {
-                Log.e("DyastieVM", "Failed to import media", e)
+                Log.e("DyastieVM", "Failed to relink media", e)
                 withContext(Dispatchers.Main) {
-                    _statusMessage.value = "Failed to import: ${e.localizedMessage}"
+                    _statusMessage.value = "Failed to relink: ${e.localizedMessage}"
+                }
+            }
+        }
+    }
+
+    // Media Import
+    fun importMedia(uri: Uri, context: Context) {
+        importMultipleMedia(listOf(uri), context)
+    }
+
+    fun importMultipleMedia(uris: List<Uri>, context: Context) {
+        viewModelScope.launch(Dispatchers.IO) {
+            var importedCount = 0
+            val importedItems = mutableListOf<MediaItem>()
+            var hadInternalCopy = false
+
+            for (uri in uris) {
+                try {
+                    val result = MediaImportManager.importMedia(context, uri)
+                    importedItems.add(result.mediaItem)
+                    if (result.wasCopiedToInternal) hadInternalCopy = true
+                    importedCount++
+                } catch (e: Exception) {
+                    Log.e("DyastieVM", "Failed importing media $uri", e)
+                }
+            }
+
+            if (importedItems.isNotEmpty()) {
+                withContext(Dispatchers.Main) {
+                    saveCurrentState()
+                    val updatedMedia = _project.value.mediaItems + importedItems
+                    _project.value = _project.value.copy(mediaItems = updatedMedia)
+                    val copyNote = if (hadInternalCopy) " (copied to internal storage)" else ""
+                    _statusMessage.value = "Imported $importedCount file(s)$copyNote"
+                    for (item in importedItems) {
+                        addMediaToTimeline(item)
+                    }
+                    triggerAutosave()
+                }
+            } else {
+                withContext(Dispatchers.Main) {
+                    _statusMessage.value = "Failed to import selected file(s)"
                 }
             }
         }
@@ -364,6 +435,7 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         if (mediaItem.hasVideo) {
             val vClipId = "clip_${UUID.randomUUID().toString().take(8)}"
             val aClipId = if (mediaItem.hasAudio) "clip_${UUID.randomUUID().toString().take(8)}" else null
+            val sharedGroupId = if (mediaItem.hasAudio) "grp_${UUID.randomUUID().toString().take(8)}" else null
 
             val videoClip = TimelineClip(
                 id = vClipId,
@@ -375,7 +447,8 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
                 timelineDurationMs = duration,
                 sourceInMs = 0L,
                 sourceOutMs = duration,
-                linkedClipId = aClipId
+                linkedClipId = aClipId,
+                groupId = sharedGroupId
             )
             newClips.add(videoClip)
 
@@ -390,7 +463,8 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
                     timelineDurationMs = duration,
                     sourceInMs = 0L,
                     sourceOutMs = duration,
-                    linkedClipId = vClipId
+                    linkedClipId = vClipId,
+                    groupId = sharedGroupId
                 )
                 newClips.add(audioClip)
                 viewModelScope.launch { loadWaveformForClip(audioClip, mediaItem) }
@@ -409,12 +483,27 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
             )
             newClips.add(audioClip)
             viewModelScope.launch { loadWaveformForClip(audioClip, mediaItem) }
+        } else {
+            // Image clip on V2 or V1
+            val imgClip = TimelineClip(
+                id = "clip_${UUID.randomUUID().toString().take(8)}",
+                mediaId = mediaItem.id,
+                name = "${mediaItem.name} [IMG]",
+                trackId = "V2",
+                isVideoTrack = true,
+                timelineStartMs = playhead,
+                timelineDurationMs = duration,
+                sourceInMs = 0L,
+                sourceOutMs = duration
+            )
+            newClips.add(imgClip)
         }
 
         _project.value = _project.value.copy(clips = _project.value.clips + newClips)
         playback.renderCurrentTime(_project.value)
         _selectedClipIds.value = newClips.map { it.id }.toSet()
         _statusMessage.value = "Added to timeline (${newClips.size} tracks)"
+        triggerAutosave()
     }
 
     private suspend fun loadWaveformForClip(clip: TimelineClip, mediaItem: MediaItem) {
@@ -612,11 +701,23 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         if (selected.isEmpty()) return
 
         saveCurrentState()
-        val remaining = _project.value.clips.filterNot { selected.contains(it.id) }
+        val allClips = _project.value.clips
+        val clipsToDeleteIds = selected.toMutableSet()
+        for (id in selected) {
+            val clip = allClips.find { it.id == id }
+            if (clip?.linkedClipId != null && clip.groupId != null) {
+                clipsToDeleteIds.add(clip.linkedClipId)
+            }
+            if (clip?.groupId != null) {
+                allClips.filter { it.groupId == clip.groupId }.forEach { clipsToDeleteIds.add(it.id) }
+            }
+        }
+        val remaining = allClips.filterNot { clipsToDeleteIds.contains(it.id) }
         _project.value = _project.value.copy(clips = remaining)
         _selectedClipIds.value = emptySet()
         playback.renderCurrentTime(_project.value)
-        _statusMessage.value = "Deleted ${selected.size} clip(s)"
+        _statusMessage.value = "Deleted ${clipsToDeleteIds.size} clip(s)"
+        triggerAutosave()
     }
 
     // Ripple Delete
@@ -625,11 +726,22 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         if (selected.isEmpty()) return
 
         saveCurrentState()
-        val clipsToDelete = _project.value.clips.filter { selected.contains(it.id) }
+        val allClips = _project.value.clips
+        val clipsToDeleteIds = selected.toMutableSet()
+        for (id in selected) {
+            val clip = allClips.find { it.id == id }
+            if (clip?.linkedClipId != null && clip.groupId != null) {
+                clipsToDeleteIds.add(clip.linkedClipId)
+            }
+            if (clip?.groupId != null) {
+                allClips.filter { it.groupId == clip.groupId }.forEach { clipsToDeleteIds.add(it.id) }
+            }
+        }
+        val clipsToDelete = allClips.filter { clipsToDeleteIds.contains(it.id) }
         val earliestStart = clipsToDelete.minOfOrNull { it.timelineStartMs } ?: 0L
         val maxDuration = clipsToDelete.maxOfOrNull { it.timelineDurationMs } ?: 0L
 
-        val remaining = _project.value.clips.filterNot { selected.contains(it.id) }.map { c ->
+        val remaining = allClips.filterNot { clipsToDeleteIds.contains(it.id) }.map { c ->
             if (c.timelineStartMs >= earliestStart) {
                 c.copy(timelineStartMs = (c.timelineStartMs - maxDuration).coerceAtLeast(0L))
             } else c
@@ -638,7 +750,8 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         _project.value = _project.value.copy(clips = remaining)
         _selectedClipIds.value = emptySet()
         playback.renderCurrentTime(_project.value)
-        _statusMessage.value = "Ripple deleted"
+        _statusMessage.value = "Ripple deleted ${clipsToDeleteIds.size} clip(s)"
+        triggerAutosave()
     }
 
     // Link / Unlink (Section 5)
@@ -663,14 +776,16 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
 
         if (videoClip != null && audioClip != null) {
             saveCurrentState()
+            val newGroupId = "grp_${UUID.randomUUID().toString().take(8)}"
             val updated = _project.value.clips.map { c ->
                 when (c.id) {
-                    videoClip.id -> c.copy(linkedClipId = audioClip.id)
-                    audioClip.id -> c.copy(linkedClipId = videoClip.id)
+                    videoClip.id -> c.copy(linkedClipId = audioClip.id, groupId = newGroupId)
+                    audioClip.id -> c.copy(linkedClipId = videoClip.id, groupId = newGroupId)
                     else -> c
                 }
             }
             _project.value = _project.value.copy(clips = updated)
+            triggerAutosave()
             _statusMessage.value = "Linked ${videoClip.name} and ${audioClip.name}"
         }
     }
@@ -680,9 +795,10 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         val partnerId = clip.linkedClipId
         saveCurrentState()
         val updated = _project.value.clips.map { c ->
-            if (c.id == clip.id || c.id == partnerId) c.copy(linkedClipId = null) else c
+            if (c.id == clip.id || c.id == partnerId) c.copy(linkedClipId = null, groupId = null) else c
         }
         _project.value = _project.value.copy(clips = updated)
+        triggerAutosave()
         _statusMessage.value = "Unlinked clip"
     }
 
@@ -993,6 +1109,17 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         _project.value = _project.value.copy(clips = updated)
         playback.renderCurrentTime(_project.value)
         _statusMessage.value = "Removed keyframe"
+    }
+
+    // Transitions
+    fun updateClipTransitions(clipId: String, transitionIn: ClipTransition?, transitionOut: ClipTransition?) {
+        saveCurrentState()
+        val updated = _project.value.clips.map { c ->
+            if (c.id == clipId) c.copy(transitionIn = transitionIn, transitionOut = transitionOut) else c
+        }
+        _project.value = _project.value.copy(clips = updated)
+        playback.renderCurrentTime(_project.value)
+        _statusMessage.value = "Updated transitions"
     }
 
     // Export

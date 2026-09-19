@@ -60,3 +60,17 @@ data class TextOverlay(
     val alignment: Int = 1, // 0=left, 1=center, 2=right
     val presetName: String = "CUSTOM"
 )
+
+enum class TransitionType(val displayName: String) {
+    CROSSFADE("Crossfade / Dissolve"),
+    WIPE_LEFT("Wipe Left"),
+    WIPE_RIGHT("Wipe Right"),
+    DIP_TO_BLACK("Dip to Black"),
+    DIP_TO_WHITE("Dip to White")
+}
+
+data class ClipTransition(
+    val type: TransitionType,
+    val durationMs: Long = 500L
+)
+

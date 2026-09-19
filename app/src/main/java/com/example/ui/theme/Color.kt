@@ -25,4 +25,6 @@ val NleWaveform = Color(0xFF4ADE80)
 val NleWaveformDim = Color(0xFF166534)
 val NleTextPrimary = Color(0xFFF1F5F9)
 val NleTextSecondary = Color(0xFF94A3B8)
+val NleErrorRed = Color(0xFFEF4444)
+val NleWarningYellow = Color(0xFFF59E0B)
 

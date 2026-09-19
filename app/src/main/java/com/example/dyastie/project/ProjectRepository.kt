@@ -18,8 +18,16 @@ class ProjectRepository(private val context: Context) {
     suspend fun saveProject(project: Project, isAutosave: Boolean = false): Boolean = withContext(Dispatchers.IO) {
         try {
             val json = projectToJson(project)
-            val file = if (isAutosave) autosaveFile else File(projectsDir, "${project.id}.json")
-            file.writeText(json.toString(2))
+            val targetFile = if (isAutosave) autosaveFile else File(projectsDir, "${project.id}.json")
+            val tempFile = File(projectsDir, "${targetFile.name}.tmp_${System.currentTimeMillis()}")
+
+            // Atomic write: write to temp file then rename
+            tempFile.writeText(json.toString(2))
+            val renamed = tempFile.renameTo(targetFile)
+            if (!renamed) {
+                tempFile.copyTo(targetFile, overwrite = true)
+                tempFile.delete()
+            }
             true
         } catch (e: Exception) {
             Log.e("ProjectRepo", "Failed saving project", e)
@@ -61,8 +69,9 @@ class ProjectRepository(private val context: Context) {
         list
     }
 
-    private fun projectToJson(project: Project): JSONObject {
+    internal fun projectToJson(project: Project): JSONObject {
         val root = JSONObject()
+        root.put("schemaVersion", 1)
         root.put("id", project.id)
         root.put("name", project.name)
         root.put("createdAt", project.createdAt)
@@ -86,7 +95,10 @@ class ProjectRepository(private val context: Context) {
             m.put("fps", item.fps.toDouble())
             m.put("hasAudio", item.hasAudio)
             m.put("hasVideo", item.hasVideo)
+            m.put("sampleRate", item.sampleRate)
+            m.put("channelCount", item.channelCount)
             m.put("isSample", item.isSample)
+            m.put("isOffline", item.isOffline)
             mediaArr.put(m)
         }
         root.put("mediaItems", mediaArr)
@@ -141,6 +153,59 @@ class ProjectRepository(private val context: Context) {
             tr.put("opacity", c.transform.opacity.toDouble())
             co.put("transform", tr)
 
+            // Color Grading
+            val cg = JSONObject()
+            cg.put("brightness", c.colorGrading.brightness.toDouble())
+            cg.put("contrast", c.colorGrading.contrast.toDouble())
+            cg.put("saturation", c.colorGrading.saturation.toDouble())
+            cg.put("temperature", c.colorGrading.temperature.toDouble())
+            co.put("colorGrading", cg)
+
+            // Effects
+            if (c.effects.isNotEmpty()) {
+                val fxArr = JSONArray()
+                for (fx in c.effects) {
+                    val fo = JSONObject()
+                    fo.put("id", fx.id)
+                    fo.put("type", fx.type.name)
+                    fo.put("isEnabled", fx.isEnabled)
+                    fo.put("intensity", fx.intensity.toDouble())
+                    fo.put("speed", fx.speed.toDouble())
+                    fo.put("durationMs", fx.durationMs)
+                    fxArr.put(fo)
+                }
+                co.put("effects", fxArr)
+            }
+
+            // Keyframes
+            if (c.keyframes.isNotEmpty()) {
+                val kfArr = JSONArray()
+                for (kf in c.keyframes) {
+                    val ko = JSONObject()
+                    ko.put("id", kf.id)
+                    ko.put("timeOffsetMs", kf.timeOffsetMs)
+                    ko.put("property", kf.property.name)
+                    ko.put("value", kf.value.toDouble())
+                    ko.put("easing", kf.easing)
+                    kfArr.put(ko)
+                }
+                co.put("keyframes", kfArr)
+            }
+
+            // Transitions
+            c.transitionIn?.let { ti ->
+                val tio = JSONObject()
+                tio.put("type", ti.type.name)
+                tio.put("durationMs", ti.durationMs)
+                co.put("transitionIn", tio)
+            }
+            c.transitionOut?.let { to ->
+                val too = JSONObject()
+                too.put("type", to.type.name)
+                too.put("durationMs", to.durationMs)
+                co.put("transitionOut", too)
+            }
+
             // Text overlay
             c.textOverlay?.let { text ->
                 val txt = JSONObject()
@@ -173,7 +238,8 @@ class ProjectRepository(private val context: Context) {
         return root
     }
 
-    private fun jsonToProject(json: JSONObject): Project {
+    internal fun jsonToProject(json: JSONObject): Project {
+        val schemaVersion = json.optInt("schemaVersion", 1)
         val id = json.optString("id", "proj_${System.currentTimeMillis()}")
         val name = json.optString("name", "Dyastie Gaming Project")
         val fps = json.optDouble("fps", 30.0).toFloat()
@@ -198,7 +264,10 @@ class ProjectRepository(private val context: Context) {
                         fps = m.optDouble("fps", 30.0).toFloat(),
                         hasAudio = m.optBoolean("hasAudio", true),
                         hasVideo = m.optBoolean("hasVideo", true),
-                        isSample = m.optBoolean("isSample", false)
+                        sampleRate = m.optInt("sampleRate", 44100),
+                        channelCount = m.optInt("channelCount", 2),
+                        isSample = m.optBoolean("isSample", false),
+                        isOffline = m.optBoolean("isOffline", false)
                     )
                 )
             }
@@ -243,6 +312,75 @@ class ProjectRepository(private val context: Context) {
                     )
                 } else VideoTransform()
 
+                val cgObj = co.optJSONObject("colorGrading")
+                val colorGrading = if (cgObj != null) {
+                    ColorGrading(
+                        brightness = cgObj.optDouble("brightness", 0.0).toFloat(),
+                        contrast = cgObj.optDouble("contrast", 1.0).toFloat(),
+                        saturation = cgObj.optDouble("saturation", 1.0).toFloat(),
+                        temperature = cgObj.optDouble("temperature", 0.0).toFloat()
+                    )
+                } else ColorGrading()
+
+                val effectsList = mutableListOf<VideoEffect>()
+                val fxArr = co.optJSONArray("effects")
+                if (fxArr != null) {
+                    for (k in 0 until fxArr.length()) {
+                        val fo = fxArr.getJSONObject(k)
+                        try {
+                            effectsList.add(
+                                VideoEffect(
+                                    id = fo.getString("id"),
+                                    type = EffectType.valueOf(fo.getString("type")),
+                                    isEnabled = fo.optBoolean("isEnabled", true),
+                                    intensity = fo.optDouble("intensity", 1.0).toFloat(),
+                                    speed = fo.optDouble("speed", 1.0).toFloat(),
+                                    durationMs = fo.optLong("durationMs", 1000L)
+                                )
+                            )
+                        } catch (e: Exception) {}
+                    }
+                }
+
+                val keyframesList = mutableListOf<ClipKeyframe>()
+                val kfArr = co.optJSONArray("keyframes")
+                if (kfArr != null) {
+                    for (k in 0 until kfArr.length()) {
+                        val ko = kfArr.getJSONObject(k)
+                        try {
+                            keyframesList.add(
+                                ClipKeyframe(
+                                    id = ko.getString("id"),
+                                    timeOffsetMs = ko.getLong("timeOffsetMs"),
+                                    property = KeyframeProperty.valueOf(ko.getString("property")),
+                                    value = ko.getDouble("value").toFloat(),
+                                    easing = ko.optString("easing", "LINEAR")
+                                )
+                            )
+                        } catch (e: Exception) {}
+                    }
+                }
+
+                val tiObj = co.optJSONObject("transitionIn")
+                val transitionIn = if (tiObj != null) {
+                    try {
+                        ClipTransition(
+                            type = TransitionType.valueOf(tiObj.getString("type")),
+                            durationMs = tiObj.optLong("durationMs", 500L)
+                        )
+                    } catch (e: Exception) { null }
+                } else null
+
+                val toObj = co.optJSONObject("transitionOut")
+                val transitionOut = if (toObj != null) {
+                    try {
+                        ClipTransition(
+                            type = TransitionType.valueOf(toObj.getString("type")),
+                            durationMs = toObj.optLong("durationMs", 500L)
+                        )
+                    } catch (e: Exception) { null }
+                } else null
+
                 val txtObj = co.optJSONObject("textOverlay")
                 val textOverlay = if (txtObj != null) {
                     TextOverlay(
@@ -278,7 +416,12 @@ class ProjectRepository(private val context: Context) {
                         fadeOutMs = co.optLong("fadeOutMs", 0L),
                         gainDb = co.optDouble("gainDb", 0.0).toFloat(),
                         transform = transform,
-                        textOverlay = textOverlay
+                        colorGrading = colorGrading,
+                        effects = effectsList,
+                        keyframes = keyframesList,
+                        textOverlay = textOverlay,
+                        transitionIn = transitionIn,
+                        transitionOut = transitionOut
                     )
                 )
             }
