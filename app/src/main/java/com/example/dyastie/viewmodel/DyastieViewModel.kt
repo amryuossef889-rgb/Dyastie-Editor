@@ -39,6 +39,12 @@ enum class EditTool {
     ZOOM
 }
 
+enum class ProxyResolution(val title: String, val scale: Float) {
+    ORIGINAL("Original 1080p", 1.0f),
+    PROXY_720P("Proxy 720p", 0.67f),
+    PROXY_480P("Proxy 480p", 0.44f)
+}
+
 data class ExportStatus(
     val isExporting: Boolean = false,
     val progress: Float = 0f,
@@ -67,6 +73,9 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
 
     private val _snappingEnabled = MutableStateFlow(true)
     val snappingEnabled: StateFlow<Boolean> = _snappingEnabled.asStateFlow()
+
+    private val _proxyResolution = MutableStateFlow(ProxyResolution.ORIGINAL)
+    val proxyResolution: StateFlow<ProxyResolution> = _proxyResolution.asStateFlow()
 
     private val _clipboardClips = MutableStateFlow<List<TimelineClip>>(emptyList())
 
@@ -267,6 +276,13 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         _snappingEnabled.value = !_snappingEnabled.value
     }
 
+    fun setProxyResolution(res: ProxyResolution) {
+        _proxyResolution.value = res
+        playback.setPreviewQuality(res.scale)
+        playback.renderCurrentTime(_project.value)
+        _statusMessage.value = "Preview set to ${res.title}"
+    }
+
     fun selectClip(clipId: String, isMultiSelect: Boolean = false) {
         val current = _selectedClipIds.value.toMutableSet()
         if (isMultiSelect) {
@@ -445,27 +461,33 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
             }
         }
 
+        val handledClipIds = mutableSetOf<String>()
         for (clip in clipsToSplit) {
+            if (handledClipIds.contains(clip.id)) continue
+
+            val partnerClip = clip.linkedClipId?.let { id -> clipsToSplit.find { it.id == id } }
+
             val splitOffsetMs = playhead - clip.timelineStartMs
             if (splitOffsetMs <= 100L || splitOffsetMs >= clip.timelineDurationMs - 100L) continue
 
             val firstPartDuration = splitOffsetMs
             val secondPartDuration = clip.timelineDurationMs - splitOffsetMs
-
             val sourceSplitMs = clip.mapTimelineToSourceTime(playhead)
+
+            val part2Id = "clip_${UUID.randomUUID().toString().take(8)}"
+            val partnerPart2Id = if (partnerClip != null) "clip_${UUID.randomUUID().toString().take(8)}" else null
 
             val part1 = clip.copy(
                 timelineDurationMs = firstPartDuration,
-                sourceOutMs = sourceSplitMs
+                sourceOutMs = sourceSplitMs,
+                linkedClipId = partnerClip?.id
             )
-
-            val part2Id = "clip_${UUID.randomUUID().toString().take(8)}"
             val part2 = clip.copy(
                 id = part2Id,
                 timelineStartMs = playhead,
                 timelineDurationMs = secondPartDuration,
                 sourceInMs = sourceSplitMs,
-                linkedClipId = null // Will re-link after
+                linkedClipId = partnerPart2Id
             )
 
             val idx = allClips.indexOfFirst { it.id == clip.id }
@@ -473,6 +495,31 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
                 allClips[idx] = part1
                 allClips.add(part2)
                 newlyCreatedIds.add(part2Id)
+            }
+            handledClipIds.add(clip.id)
+
+            if (partnerClip != null && partnerPart2Id != null) {
+                val partnerSplitOffsetMs = playhead - partnerClip.timelineStartMs
+                val partnerSourceSplitMs = partnerClip.mapTimelineToSourceTime(playhead)
+                val partnerPart1 = partnerClip.copy(
+                    timelineDurationMs = partnerSplitOffsetMs,
+                    sourceOutMs = partnerSourceSplitMs,
+                    linkedClipId = part1.id
+                )
+                val partnerPart2 = partnerClip.copy(
+                    id = partnerPart2Id,
+                    timelineStartMs = playhead,
+                    timelineDurationMs = partnerClip.timelineDurationMs - partnerSplitOffsetMs,
+                    sourceInMs = partnerSourceSplitMs,
+                    linkedClipId = part2Id
+                )
+                val pIdx = allClips.indexOfFirst { it.id == partnerClip.id }
+                if (pIdx >= 0) {
+                    allClips[pIdx] = partnerPart1
+                    allClips.add(partnerPart2)
+                    newlyCreatedIds.add(partnerPart2Id)
+                }
+                handledClipIds.add(partnerClip.id)
             }
         }
 
@@ -523,34 +570,39 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
         playback.renderCurrentTime(_project.value)
     }
 
-    // Move Clip
+    // Move Clip (Preserves Groups and Linked Clips synchronously)
     fun moveClip(clipId: String, deltaMs: Long, targetTrackId: String? = null) {
         val clip = _project.value.clips.find { it.id == clipId } ?: return
         saveCurrentState()
         val allClips = _project.value.clips.toMutableList()
 
-        val linkedClip = clip.linkedClipId?.let { id -> allClips.find { it.id == id } }
+        // Collect all related clips: group members and linked clips
+        val clipsToMoveIds = mutableSetOf(clip.id)
+        if (clip.groupId != null) {
+            allClips.filter { it.groupId == clip.groupId }.forEach { clipsToMoveIds.add(it.id) }
+        }
+        clip.linkedClipId?.let { clipsToMoveIds.add(it) }
 
-        val newStart = (clip.timelineStartMs + deltaMs).coerceAtLeast(0L)
+        // Also check if any group member has linked clips
+        val expandedIds = mutableSetOf<String>()
+        expandedIds.addAll(clipsToMoveIds)
+        for (id in clipsToMoveIds) {
+            allClips.find { it.id == id }?.linkedClipId?.let { expandedIds.add(it) }
+        }
+
         val newTrack = if (targetTrackId != null && targetTrackId.startsWith(if (clip.isVideoTrack) "V" else "A")) {
             targetTrackId
         } else clip.trackId
 
-        val idx = allClips.indexOfFirst { it.id == clip.id }
-        if (idx >= 0) {
-            allClips[idx] = clip.copy(timelineStartMs = newStart, trackId = newTrack)
+        val updated = allClips.map { c ->
+            if (expandedIds.contains(c.id)) {
+                val newStart = (c.timelineStartMs + deltaMs).coerceAtLeast(0L)
+                val track = if (c.id == clip.id) newTrack else c.trackId
+                c.copy(timelineStartMs = newStart, trackId = track)
+            } else c
         }
 
-        if (linkedClip != null) {
-            val linkedIdx = allClips.indexOfFirst { it.id == linkedClip.id }
-            if (linkedIdx >= 0) {
-                allClips[linkedIdx] = linkedClip.copy(
-                    timelineStartMs = (linkedClip.timelineStartMs + deltaMs).coerceAtLeast(0L)
-                )
-            }
-        }
-
-        _project.value = _project.value.copy(clips = allClips)
+        _project.value = _project.value.copy(clips = updated)
         playback.renderCurrentTime(_project.value)
     }
 
@@ -675,8 +727,16 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
                 return@launch
             }
 
-            val w1 = getWaveformForClip(a1Clip) ?: WaveformExtractor.generateFallbackWaveform(a1Clip.name, 400)
-            val w2 = getWaveformForClip(a2Clip) ?: WaveformExtractor.generateFallbackWaveform(a2Clip.name, 400)
+            val m1 = _project.value.mediaItems.find { it.id == a1Clip.mediaId }
+            val m2 = _project.value.mediaItems.find { it.id == a2Clip.mediaId }
+
+            val w1 = getWaveformForClip(a1Clip) ?: if (m1 != null) {
+                WaveformExtractor.getWaveform(getApplication(), m1.uri, m1.durationMs, 400)
+            } else FloatArray(400) { 0.02f }
+
+            val w2 = getWaveformForClip(a2Clip) ?: if (m2 != null) {
+                WaveformExtractor.getWaveform(getApplication(), m2.uri, m2.durationMs, 400)
+            } else FloatArray(400) { 0.02f }
 
             val result = AudioSyncAssistant.calculateSyncOffset(
                 referenceClip = a1Clip,
@@ -902,6 +962,39 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
     val canUndo: Boolean get() = undoRedo.canUndo
     val canRedo: Boolean get() = undoRedo.canRedo
 
+    // Keyframe Management
+    fun addKeyframe(clipId: String, property: KeyframeProperty, value: Float) {
+        saveCurrentState()
+        val clip = _project.value.clips.find { it.id == clipId } ?: return
+        val playhead = playback.playheadPositionMs.value
+        val localTime = (playhead - clip.timelineStartMs).coerceIn(0L, clip.timelineDurationMs)
+
+        val newKf = ClipKeyframe(
+            id = "kf_${UUID.randomUUID().toString().take(6)}",
+            timeOffsetMs = localTime,
+            property = property,
+            value = value
+        )
+
+        val filtered = clip.keyframes.filterNot { it.property == property && kotlin.math.abs(it.timeOffsetMs - localTime) < 50L }
+        val updated = _project.value.clips.map { c ->
+            if (c.id == clipId) c.copy(keyframes = filtered + newKf) else c
+        }
+        _project.value = _project.value.copy(clips = updated)
+        playback.renderCurrentTime(_project.value)
+        _statusMessage.value = "Added keyframe for ${property.name}"
+    }
+
+    fun removeKeyframe(clipId: String, keyframeId: String) {
+        saveCurrentState()
+        val updated = _project.value.clips.map { c ->
+            if (c.id == clipId) c.copy(keyframes = c.keyframes.filterNot { it.id == keyframeId }) else c
+        }
+        _project.value = _project.value.copy(clips = updated)
+        playback.renderCurrentTime(_project.value)
+        _statusMessage.value = "Removed keyframe"
+    }
+
     // Export
     fun startExport(config: ExportConfig) {
         viewModelScope.launch {
@@ -926,11 +1019,16 @@ class DyastieViewModel(application: Application) : AndroidViewModel(application)
             } else {
                 _exportStatus.value = ExportStatus(
                     isExporting = false,
-                    statusText = "Export failed",
-                    error = "Could not encode video file"
+                    statusText = "Export failed or cancelled",
+                    error = "Export was interrupted or could not complete"
                 )
             }
         }
+    }
+
+    fun cancelExport() {
+        VideoExportEngine.cancelExport()
+        _exportStatus.value = ExportStatus(isExporting = false, statusText = "Export cancelled")
     }
 
     fun dismissExport() {

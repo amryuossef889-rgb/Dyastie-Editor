@@ -190,6 +190,7 @@ fun DyastieEditorScreen(
             ExportDialog(
                 exportStatus = exportStatus,
                 onStartExport = { config -> viewModel.startExport(config) },
+                onCancelExport = { viewModel.cancelExport() },
                 onDismiss = {
                     showExportDialog = false
                     viewModel.dismissExport()

@@ -34,7 +34,7 @@ fun PreviewMonitor(
     val isPlaying by viewModel.playback.isPlaying.collectAsState()
     val playheadMs by viewModel.playback.playheadPositionMs.collectAsState()
     val currentFrame by viewModel.playback.currentFrame.collectAsState()
-    val previewQuality by viewModel.playback.previewQuality.collectAsState()
+    val proxyRes by viewModel.proxyResolution.collectAsState()
 
     // Timecode calculation: HH:MM:SS:FF at 30 fps
     val totalSeconds = playheadMs / 1000
@@ -91,22 +91,28 @@ fun PreviewMonitor(
                 )
             }
 
-            // Quality switcher (Full, 1/2, 1/4)
+            // Proxy Mode Switcher (1080p, 720p, 480p)
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = "Quality:",
+                    text = "Mode:",
                     fontSize = 10.sp,
                     color = NleTextSecondary
                 )
                 Spacer(modifier = Modifier.width(4.dp))
-                listOf(1.0f to "Full", 0.5f to "1/2", 0.25f to "1/4").forEach { (q, label) ->
+                com.example.dyastie.viewmodel.ProxyResolution.values().forEach { res ->
+                    val isSelected = proxyRes == res
+                    val label = when (res) {
+                        com.example.dyastie.viewmodel.ProxyResolution.ORIGINAL -> "1080p"
+                        com.example.dyastie.viewmodel.ProxyResolution.PROXY_720P -> "720p"
+                        com.example.dyastie.viewmodel.ProxyResolution.PROXY_480P -> "480p"
+                    }
                     Text(
                         text = label,
                         fontSize = 10.sp,
-                        fontWeight = if (previewQuality == q) FontWeight.Bold else FontWeight.Normal,
-                        color = if (previewQuality == q) NleAccentCyan else NleTextSecondary,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                        color = if (isSelected) (if (res == com.example.dyastie.viewmodel.ProxyResolution.ORIGINAL) NleAccentCyan else Color(0xFFFFB300)) else NleTextSecondary,
                         modifier = Modifier
-                            .clickable { viewModel.playback.setPreviewQuality(q) }
+                            .clickable { viewModel.setProxyResolution(res) }
                             .padding(horizontal = 4.dp, vertical = 2.dp)
                     )
                 }
@@ -128,6 +134,26 @@ fun PreviewMonitor(
                     modifier = Modifier.fillMaxSize(),
                     contentScale = ContentScale.Fit
                 )
+
+                // Prominent Proxy Badge when Proxy mode is active
+                if (proxyRes != com.example.dyastie.viewmodel.ProxyResolution.ORIGINAL) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(8.dp)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFFCC8800).copy(alpha = 0.85f))
+                            .border(1.dp, Color(0xFFFFD54F), RoundedCornerShape(4.dp))
+                            .padding(horizontal = 6.dp, vertical = 2.dp)
+                    ) {
+                        Text(
+                            text = "${proxyRes.title.uppercase()} (FAST TAB A7)",
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color.Black
+                        )
+                    }
+                }
             } else {
                 Text(
                     text = "READY",

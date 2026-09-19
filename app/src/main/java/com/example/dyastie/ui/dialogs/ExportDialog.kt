@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Movie
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -25,47 +26,62 @@ import com.example.dyastie.viewmodel.ExportStatus
 fun ExportDialog(
     exportStatus: ExportStatus,
     onStartExport: (ExportConfig) -> Unit,
+    onCancelExport: () -> Unit = {},
     onDismiss: () -> Unit
 ) {
     var selectedPreset by remember { mutableStateOf(ExportConfig.YOUTUBE_1080P) }
 
-    Dialog(onDismissRequest = onDismiss) {
+    Dialog(onDismissRequest = {
+        if (!exportStatus.isExporting) onDismiss()
+    }) {
         Surface(
             shape = RoundedCornerShape(12.dp),
             color = NleSurface,
             border = androidx.compose.foundation.BorderStroke(1.dp, NleBorder),
-            modifier = Modifier.width(440.dp).padding(16.dp).testTag("export_dialog")
+            modifier = Modifier.width(460.dp).padding(16.dp).testTag("export_dialog")
         ) {
             Column(
-                modifier = Modifier.padding(16.dp),
+                modifier = Modifier.padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(
-                        imageVector = Icons.Default.Movie,
-                        contentDescription = "Export",
-                        tint = NleAccentCyan,
-                        modifier = Modifier.size(24.dp)
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(
-                        text = "EXPORT VIDEO",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = NleTextPrimary
-                    )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Default.Movie,
+                            contentDescription = "Export",
+                            tint = NleAccentCyan,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = "EXPORT VIDEO (H.264 + AAC)",
+                            fontSize = 15.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = NleTextPrimary
+                        )
+                    }
+
+                    if (!exportStatus.isExporting) {
+                        IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                            Icon(Icons.Default.Close, contentDescription = "Close", tint = NleTextSecondary)
+                        }
+                    }
                 }
 
                 if (!exportStatus.isExporting && exportStatus.exportedFile == null) {
                     Text(
-                        text = "Choose Output Preset:",
+                        text = "Hardware-accelerated MP4 encoder (Video + Mixed Audio tracks):",
                         fontSize = 12.sp,
                         color = NleTextSecondary
                     )
 
                     listOf(
-                        ExportConfig.YOUTUBE_1080P to "1920x1080 • 30fps • 8 Mbps (Standard Gaming)",
-                        ExportConfig.YOUTUBE_720P to "1280x720 • 30fps • 4 Mbps (Fast / Smaller File)",
+                        ExportConfig.YOUTUBE_1080P to "1920x1080 • 30fps • 8 Mbps (Standard Gaming Quality)",
+                        ExportConfig.YOUTUBE_720P to "1280x720 • 30fps • 4 Mbps (Fast / Tab A7 Optimized)",
                         ExportConfig.YOUTUBE_SHORTS to "1080x1920 • Vertical • 6 Mbps (YouTube Shorts / TikTok)"
                     ).forEach { (preset, desc) ->
                         val isSelected = selectedPreset.title == preset.title
@@ -80,7 +96,7 @@ fun ExportDialog(
                                 ),
                             colors = CardDefaults.cardColors(containerColor = NleSurfaceVariant)
                         ) {
-                            Column(modifier = Modifier.padding(10.dp)) {
+                            Column(modifier = Modifier.padding(12.dp)) {
                                 Text(
                                     text = preset.title,
                                     fontSize = 13.sp,
@@ -89,7 +105,7 @@ fun ExportDialog(
                                 )
                                 Text(
                                     text = desc,
-                                    fontSize = 10.sp,
+                                    fontSize = 11.sp,
                                     color = NleTextSecondary
                                 )
                             }
@@ -117,11 +133,11 @@ fun ExportDialog(
                     Column(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Text(
-                            text = "Encoding Hardware H.264 MP4...",
-                            fontSize = 13.sp,
+                            text = "Encoding Hardware MP4 (Video + Audio)...",
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = NleTextPrimary
                         )
@@ -135,9 +151,17 @@ fun ExportDialog(
 
                         Text(
                             text = "${(exportStatus.progress * 100).toInt()}% • ${exportStatus.statusText}",
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             color = NleTextSecondary
                         )
+
+                        OutlinedButton(
+                            onClick = onCancelExport,
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.Red),
+                            shape = RoundedCornerShape(6.dp)
+                        ) {
+                            Text("Cancel Export", color = Color(0xFFFF5252))
+                        }
                     }
                 } else {
                     // Completed
@@ -148,20 +172,21 @@ fun ExportDialog(
                     ) {
                         Text(
                             text = "Export Completed Successfully!",
-                            fontSize = 14.sp,
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.Bold,
                             color = NleWaveform
                         )
                         Text(
                             text = "Saved to Movies:\n${exportStatus.exportedFile?.absolutePath}",
-                            fontSize = 11.sp,
+                            fontSize = 12.sp,
                             color = NleTextSecondary,
                             textAlign = androidx.compose.ui.text.style.TextAlign.Center
                         )
 
                         Button(
                             onClick = onDismiss,
-                            colors = ButtonDefaults.buttonColors(containerColor = NleAccentCyan)
+                            colors = ButtonDefaults.buttonColors(containerColor = NleAccentCyan),
+                            shape = RoundedCornerShape(6.dp)
                         ) {
                             Text("Done", color = Color.Black, fontWeight = FontWeight.Bold)
                         }

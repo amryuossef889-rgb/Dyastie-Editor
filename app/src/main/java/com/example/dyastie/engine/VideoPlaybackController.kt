@@ -159,9 +159,51 @@ class VideoPlaybackController(
             }
         } catch (e: Exception) {
             Log.w("VideoPlayback", "Error extracting frame for ${mediaItem.id}", e)
+            return generateMediaOfflineFrame(mediaItem.name)
         }
 
-        return generateSampleGamingFrame(mediaItem, sourceTimeMs)
+        return generateMediaOfflineFrame(mediaItem.name)
+    }
+
+    private fun generateMediaOfflineFrame(mediaName: String): Bitmap {
+        val w = 640
+        val h = 360
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.rgb(20, 20, 24))
+
+        // Red caution stripes
+        val stripePaint = Paint().apply {
+            color = Color.rgb(180, 25, 25)
+            strokeWidth = 14f
+        }
+        var x = -100f
+        while (x < w + 200) {
+            canvas.drawLine(x, 0f, x + 80f, h.toFloat(), stripePaint)
+            x += 60f
+        }
+
+        val overlayPaint = Paint().apply { color = Color.argb(210, 15, 15, 18) }
+        canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), overlayPaint)
+
+        // Offline Banner
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(240, 60, 60)
+            textSize = 28f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("MEDIA OFFLINE", w / 2f, h / 2f - 10f, textPaint)
+
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.LTGRAY
+            textSize = 18f
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(mediaName, w / 2f, h / 2f + 25f, subPaint)
+        canvas.drawText("Check file path or re-link media in Media Bin", w / 2f, h / 2f + 55f, subPaint.apply { textSize = 14f })
+
+        return bmp
     }
 
     private fun generateSampleGamingFrame(mediaItem: MediaItem, sourceTimeMs: Long): Bitmap {

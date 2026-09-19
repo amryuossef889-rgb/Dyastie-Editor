@@ -31,16 +31,24 @@ object VideoRenderPipeline {
         val transform = clip.transform
         val colorGrading = clip.colorGrading
         val effects = clip.effects.filter { it.isEnabled }
+        val localTimeMs = (timelineTimeMs - clip.timelineStartMs).coerceAtLeast(0L)
+
+        // 1. Interpolate Transform with Keyframes if present
+        val animPosX = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.POSITION_X, localTimeMs, transform.posX)
+        val animPosY = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.POSITION_Y, localTimeMs, transform.posY)
+        val animScaleX = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.SCALE, localTimeMs, transform.scaleX)
+        val animScaleY = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.SCALE, localTimeMs, transform.scaleY)
+        val animRotation = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.ROTATION, localTimeMs, transform.rotationDeg)
+        val animOpacity = ClipKeyframe.interpolate(clip.keyframes, KeyframeProperty.OPACITY, localTimeMs, transform.opacity)
 
         canvas.save()
 
-        // 1. Apply Transform (Position, Scale, Rotation, Opacity)
-        val centerX = targetWidth / 2f + transform.posX * (targetWidth / 1920f)
-        val centerY = targetHeight / 2f + transform.posY * (targetHeight / 1080f)
+        val centerX = targetWidth / 2f + animPosX * (targetWidth / 1920f)
+        val centerY = targetHeight / 2f + animPosY * (targetHeight / 1080f)
 
-        var totalScaleX = transform.scaleX
-        var totalScaleY = transform.scaleY
-        var totalRotation = transform.rotationDeg
+        var totalScaleX = animScaleX
+        var totalScaleY = animScaleY
+        var totalRotation = animRotation
         var shakeOffsetX = 0f
         var shakeOffsetY = 0f
 

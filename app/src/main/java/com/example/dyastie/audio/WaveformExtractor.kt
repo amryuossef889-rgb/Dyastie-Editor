@@ -12,7 +12,6 @@ import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.ConcurrentHashMap
-import kotlin.math.abs
 import kotlin.math.sqrt
 
 object WaveformExtractor {
@@ -43,10 +42,14 @@ object WaveformExtractor {
         }
 
         val peaks = try {
-            extractPeaks(context, uri, durationMs, pointsCount)
+            if (uri.toString().startsWith("sample://")) {
+                generateSampleAudioWaveform(uri.toString(), pointsCount)
+            } else {
+                extractPeaks(context, uri, durationMs, pointsCount)
+            }
         } catch (e: Exception) {
-            Log.w(TAG, "Audio decoding failed for $uri, falling back to heuristic waveform", e)
-            generateFallbackWaveform(uri.toString(), pointsCount)
+            Log.w(TAG, "Audio decoding failed for $uri, returning flat silence baseline", e)
+            FloatArray(pointsCount) { 0.02f }
         }
 
         memoryCache[cacheKey] = peaks
@@ -74,7 +77,7 @@ object WaveformExtractor {
             extractor.setDataSource(context, uri, null)
         } catch (e: Exception) {
             extractor.release()
-            return generateFallbackWaveform(uri.toString(), pointsCount)
+            return FloatArray(pointsCount) { 0.02f }
         }
 
         var audioTrackIndex = -1
@@ -91,7 +94,7 @@ object WaveformExtractor {
 
         if (audioTrackIndex < 0 || audioFormat == null) {
             extractor.release()
-            return generateFallbackWaveform(uri.toString(), pointsCount)
+            return FloatArray(pointsCount) { 0.02f } // Silent track
         }
 
         extractor.selectTrack(audioTrackIndex)
@@ -107,15 +110,13 @@ object WaveformExtractor {
 
             val bufferInfo = MediaCodec.BufferInfo()
             var isEos = false
-            var sampleIdx = 0
-            val maxSamplesToDecode = pointsCount * 2
 
-            // Fast decimation loop: step through intervals and decode brief chunks
+            // Decimation loop: step through intervals and decode real PCM samples
             for (i in 0 until pointsCount) {
                 val targetTimeUs = i * stepUs
                 extractor.seekTo(targetTimeUs, MediaExtractor.SEEK_TO_CLOSEST_SYNC)
 
-                val inputIndex = decoder.dequeueInputBuffer(10000L)
+                val inputIndex = decoder.dequeueInputBuffer(5000L)
                 if (inputIndex >= 0) {
                     val inputBuffer = decoder.getInputBuffer(inputIndex)
                     if (inputBuffer != null) {
@@ -135,7 +136,7 @@ object WaveformExtractor {
                     }
                 }
 
-                val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 10000L)
+                val outIndex = decoder.dequeueOutputBuffer(bufferInfo, 5000L)
                 if (outIndex >= 0) {
                     val outBuffer = decoder.getOutputBuffer(outIndex)
                     if (outBuffer != null && bufferInfo.size > 0) {
@@ -154,12 +155,12 @@ object WaveformExtractor {
                             p += step
                         }
 
-                        val rms = if (count > 0) sqrt(sum / count).toFloat() else 0.05f
-                        rawPeaks[i] = (rms * 2.5f).coerceIn(0.04f, 1.0f)
+                        val rms = if (count > 0) sqrt(sum / count).toFloat() else 0.02f
+                        rawPeaks[i] = (rms * 2.5f).coerceIn(0.02f, 1.0f)
                     }
                     decoder.releaseOutputBuffer(outIndex, false)
                 } else {
-                    rawPeaks[i] = if (i > 0) rawPeaks[i - 1] * 0.9f else 0.1f
+                    rawPeaks[i] = if (i > 0) rawPeaks[i - 1] * 0.85f else 0.02f
                 }
 
                 if (isEos) break
@@ -170,30 +171,40 @@ object WaveformExtractor {
         } catch (e: Exception) {
             Log.w(TAG, "Direct codec extraction interrupted: ${e.message}")
             extractor.release()
-            return generateFallbackWaveform(uri.toString(), pointsCount)
+            return FloatArray(pointsCount) { 0.02f }
         }
 
         extractor.release()
 
         // Normalize peaks
-        val maxPeak = rawPeaks.maxOrNull()?.coerceAtLeast(0.1f) ?: 1.0f
+        val maxPeak = rawPeaks.maxOrNull()?.coerceAtLeast(0.05f) ?: 1.0f
         return FloatArray(pointsCount) { idx ->
-            (rawPeaks[idx] / maxPeak).coerceIn(0.05f, 1.0f)
+            (rawPeaks[idx] / maxPeak).coerceIn(0.02f, 1.0f)
         }
     }
 
-    fun generateFallbackWaveform(seedKey: String, count: Int): FloatArray {
-        val random = java.util.Random(seedKey.hashCode().toLong())
+    // Deterministic mathematical wave for starter sample media
+    private fun generateSampleAudioWaveform(sampleKey: String, count: Int): FloatArray {
         val peaks = FloatArray(count)
-        var current = 0.3f
+        val isMic = sampleKey.contains("mic") || sampleKey.contains("voice")
+        val isSfx = sampleKey.contains("sfx")
+
         for (i in 0 until count) {
-            val delta = (random.nextFloat() - 0.48f) * 0.25f
-            current = (current + delta).coerceIn(0.08f, 0.95f)
-            // periodic gaming spikes (gunshots, punch, speech)
-            if (i % 25 == 0 && random.nextFloat() > 0.3f) {
-                current = (0.7f + random.nextFloat() * 0.3f).coerceIn(0.1f, 1.0f)
+            val t = i.toDouble() / count
+            val envelope = if (isSfx) {
+                // Decay burst
+                kotlin.math.exp(-3.0 * t).toFloat() * 0.9f
+            } else if (isMic) {
+                // Speech cadence: rhythmic voice syllables with breathing pauses
+                val voiceCadence = (kotlin.math.sin(t * 30.0) * 0.5 + 0.5).toFloat()
+                val pauseGate = if ((i / 30) % 4 == 0) 0.08f else 1.0f
+                (0.2f + 0.65f * voiceCadence * pauseGate).coerceIn(0.05f, 0.95f)
+            } else {
+                // Game audio: gunshots, ambient noise, combat action
+                val combatPulsing = (kotlin.math.sin(t * 15.0) * 0.4 + 0.5).toFloat()
+                (0.25f + 0.5f * combatPulsing).coerceIn(0.08f, 0.95f)
             }
-            peaks[i] = current
+            peaks[i] = envelope
         }
         return peaks
     }
