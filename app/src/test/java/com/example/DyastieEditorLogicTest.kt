@@ -105,4 +105,37 @@ class DyastieEditorLogicTest {
         val project = Project.createEmpty("Test Project")
         assertTrue(project.durationMs >= 10_000L)
     }
+
+    @Test
+    fun `test waveform slicing for trimmed clips`() {
+        val fullWaveform = FloatArray(100) { i -> i / 100f }
+        val durationMs = 10_000L
+        val sourceInMs = 2_500L
+        val sourceOutMs = 7_500L
+
+        val startFrac = (sourceInMs.toFloat() / durationMs).coerceIn(0f, 1f)
+        val endFrac = (sourceOutMs.toFloat() / durationMs).coerceIn(startFrac, 1f)
+        val startIdx = (startFrac * fullWaveform.size).toInt().coerceIn(0, fullWaveform.size - 1)
+        val endIdx = (endFrac * fullWaveform.size).toInt().coerceIn(startIdx + 1, fullWaveform.size)
+
+        val sliced = fullWaveform.copyOfRange(startIdx, endIdx)
+
+        assertEquals(25, startIdx)
+        assertEquals(75, endIdx)
+        assertEquals(50, sliced.size)
+        assertEquals(0.25f, sliced[0], 0.01f)
+        assertEquals(0.74f, sliced[sliced.size - 1], 0.01f)
+    }
+
+    @Test
+    fun `test video transform boundary clamping and reset`() {
+        val transform = VideoTransform(scaleX = 1.5f, scaleY = 1.5f, posX = 120f, posY = -40f, opacity = 0.8f)
+        assertEquals(1.5f, transform.scaleX, 0.001f)
+        assertEquals(0.8f, transform.opacity, 0.001f)
+
+        val defaultTransform = VideoTransform()
+        assertEquals(1.0f, defaultTransform.scaleX, 0.001f)
+        assertEquals(1.0f, defaultTransform.opacity, 0.001f)
+        assertEquals(0f, defaultTransform.posX, 0.001f)
+    }
 }

@@ -215,8 +215,18 @@ fun TimelineComponent(
                             val clipX = (clip.timelineStartMs * pxPerMs).dp
                             val clipWidth = max((clip.timelineDurationMs * pxPerMs).toInt(), 24).dp
                             val isSelected = selectedClipIds.contains(clip.id)
-                            val waveform = if (!clip.isVideoTrack) viewModel.getWaveformForClip(clip) else null
-                            val isOffline = project.mediaItems.find { it.id == clip.mediaId }?.isOffline == true
+                            val mediaItem = project.mediaItems.find { it.id == clip.mediaId }
+                            val isOffline = mediaItem?.isOffline == true
+                            val fullWaveform = if (!clip.isVideoTrack) viewModel.getWaveformForClip(clip) else null
+                            val waveform = if (fullWaveform != null && mediaItem != null && mediaItem.durationMs > 0L) {
+                                val startFrac = (clip.sourceInMs.toFloat() / mediaItem.durationMs).coerceIn(0f, 1f)
+                                val endFrac = (clip.sourceOutMs.toFloat() / mediaItem.durationMs).coerceIn(startFrac, 1f)
+                                val startIdx = (startFrac * fullWaveform.size).toInt().coerceIn(0, fullWaveform.size - 1)
+                                val endIdx = (endFrac * fullWaveform.size).toInt().coerceIn(startIdx + 1, fullWaveform.size)
+                                fullWaveform.copyOfRange(startIdx, endIdx)
+                            } else {
+                                fullWaveform
+                            }
 
                             ClipView(
                                 clip = clip,
